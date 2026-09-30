@@ -1,5 +1,5 @@
 name: CLIProxyAPI
-version: "8.0.4-1"
+version: "8.0.4-2"
 image: ghcr.io/diabl0570/home-assistant-app-cliproxyapi-{arch}
 slug: cliproxyapi
 description: OpenAI-compatible CLIProxyAPI server as a Home Assistant app
