@@ -1,0 +1,31 @@
+name: Check upstream updates
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/update_upstream.py
+      - uses: peter-evans/create-pull-request@v7
+        id: update_pr
+        with:
+          base: main
+          branch: codex/cliproxyapi-upstream
+          title: Update pinned CLIProxyAPI release
+          body: Updates the stable v8 release and official checksum. Review upstream changes and verify the build workflow before merging. Major upgrades require manual review.
+          commit-message: Update pinned CLIProxyAPI release
+      - name: Verify proposed update
+        if: steps.update_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run build.yaml --ref codex/cliproxyapi-upstream

@@ -1,0 +1,56 @@
+name: Build and verify Home Assistant app
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  amd64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML==6.0.2
+      - run: python -m unittest discover -s cliproxyapi/tests -v
+      - run: |
+          VERSION=$(python -c 'import yaml; print(yaml.safe_load(open("cliproxyapi/config.yaml"))["version"])')
+          docker build --build-arg BUILD_ARCH=amd64 --build-arg BUILD_VERSION="$VERSION" --build-arg BUILD_REF="$GITHUB_SHA" -t ha-cliproxy-test cliproxyapi
+      - run: python scripts/smoke.py
+      - name: Publish verified image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(python -c 'import yaml; print(yaml.safe_load(open("cliproxyapi/config.yaml"))["version"])')
+          IMAGE=ghcr.io/diabl0570/home-assistant-app-cliproxyapi-amd64
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            docker pull "$IMAGE:$VERSION"
+            EXISTING_REF=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$VERSION")
+            if [ "$EXISTING_REF" != "$GITHUB_SHA" ]; then
+              echo 'Version already published from another commit. Bump the app version suffix.' >&2
+              exit 1
+            fi
+          else
+            docker tag ha-cliproxy-test "$IMAGE:$VERSION"
+            docker push "$IMAGE:$VERSION"
+          fi
+          docker logout ghcr.io
+          DOCKER_CONFIG=$(mktemp -d) docker manifest inspect "$IMAGE:$VERSION" >/dev/null
+          git fetch origin stable:refs/remotes/origin/stable || true
+          if git show-ref --verify --quiet refs/remotes/origin/stable; then
+            git merge-base --is-ancestor origin/stable HEAD
+          fi
+          git push origin HEAD:refs/heads/stable

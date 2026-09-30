@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+/data/
+/auths/
+options.json
+cliproxy.yaml
+*.tar.gz
