@@ -9,14 +9,14 @@ The public repository and container image are published under `Diabl0570`. Use t
 1. In Home Assistant open **Settings → Apps → App store → ⋮ → Repositories** (older versions call these Add-ons).
 2. Add `https://github.com/Diabl0570/home-assistant-app-cliproxyapi#stable`.
 3. Install **CLIProxyAPI**. Set `api_keys` to one or more random client keys and `management_password` to a different random password of at least 24 characters. Defaults intentionally cannot start.
-4. Start the app and enable **Start on boot**. Open **Web UI** to manage providers.
+4. Start the app and enable **Start on boot**. Open **Web UI** to manage providers in the bundled [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus) panel; log in with the management password. The stock panel stays at `http://HOME_ASSISTANT_IP:8317/management.html`.
 5. Use `http://HOME_ASSISTANT_IP:8317/v1` and a client API key in compatible clients.
 
 [English documentation](cliproxyapi/DOCS.md) · [Nederlandse snelstart](cliproxyapi/QUICKSTART.nl.md)
 
 ## Updates
 
-A daily workflow proposes stable CLIProxyAPI v8 updates in a pull request. Release asset, checksum, app version and changelog change together. The updater explicitly dispatches the build workflow for its PR branch, because GitHub suppresses ordinary PR triggers created with `GITHUB_TOKEN`. Review the successful build before merging. New major upstream versions require a manual compatibility review. A successful main build publishes the versioned amd64 image to GHCR. Only after an anonymous image-pull check passes does the workflow advance the `stable` installation branch. Home Assistant detects the changed app version and offers **Update** after refreshing the store; users do not have to rebuild upstream themselves.
+A daily workflow proposes stable CLIProxyAPI v8 and CPA Manager Plus v1 updates in separate pull requests. Release asset, checksum, app version and changelog change together. The updater explicitly dispatches the build workflow for its PR branch, because GitHub suppresses ordinary PR triggers created with `GITHUB_TOKEN`. Review the successful build before merging. New major upstream versions, and CPA Manager Plus releases marked breaking or needing migration or a newer CLIProxyAPI, require a manual compatibility review. A successful main build publishes the versioned amd64 image to GHCR. Only after an anonymous image-pull check passes does the workflow advance the `stable` installation branch. Home Assistant detects the changed app version and offers **Update** after refreshing the store; users do not have to rebuild upstream themselves.
 
 Inspired by the app structure and update approach of [alexbelgium/hassio-addons](https://github.com/alexbelgium/hassio-addons). Implementation is a small standalone wrapper, without copying its scripts.
 
@@ -32,7 +32,7 @@ gh repo create Diabl0570/home-assistant-app-cliproxyapi --public --source=. --re
 
 Published image tags are immutable: bump the app version wrapper suffix (for example `8.0.4-2`) for changes after a version is published. A rerun of the same commit can reuse its existing image, including after changing package visibility.
 
-The build uses Debian glibc, upstream release 8.0.4 and its official SHA-256. `cliproxyapi/updater.json` is the authoritative upstream pin. Local verification:
+The build uses Debian glibc, upstream release 8.0.4 and CPA Manager Plus 1.14.2 with their official SHA-256 checksums. `cliproxyapi/updater.json` and `cliproxyapi/manager-plus.json` are the authoritative upstream pins. Local verification:
 
 ```sh
 python3 -m pip install PyYAML==6.0.2
@@ -43,4 +43,4 @@ python3 scripts/smoke.py
 
 The smoke test uses no provider accounts. Actual Home Assistant installation and provider login still require testing on a Home Assistant device.
 
-MIT license applies to this wrapper. The container includes the upstream release LICENSE; upstream and the separately downloaded management panel retain their own licensing.
+MIT license applies to this wrapper. The container includes the CLIProxyAPI and CPA Manager Plus (MIT) release LICENSE files; upstream projects and the separately downloaded stock management panel retain their own licensing.

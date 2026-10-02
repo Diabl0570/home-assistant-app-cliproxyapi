@@ -1,3 +1,11 @@
+# 8.0.4-5
+
+- Bundle CPA Manager Plus 1.14.2 (Full Mode Manager Server), upstream checksum pinned, on port 18317. **Open Web UI** now opens it; the stock panel stays on port 8317.
+- CPA Manager Plus logs in with the management password and connects to the proxy automatically. Its data lives in `/data/cpa-manager-plus/`.
+- Turn CLIProxyAPI usage statistics on by default for CPA Manager Plus monitoring, unless switched off in a panel.
+- Daily workflow proposes CPA Manager Plus updates in a pull request.
+- CLIProxyAPI remains at 8.0.4.
+
 # 8.0.4-4
 
 - Add routing app options, applied at every start: session affinity on with a 1-hour idle binding, round-robin (or fill-first) spread of new conversations, and retrying a failed request on your other accounts. CLIProxyAPI still moves a conversation to another account after a quota or other credential failure.

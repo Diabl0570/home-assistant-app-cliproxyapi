@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -101,6 +102,50 @@ class StartupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     startup.prepare(self.data)
                 self.assertEqual(config.read_bytes(), original)
+
+    def test_usage_statistics_default_on_but_panel_choice_survives(self):
+        config = startup.prepare(self.data)
+        self.assertTrue(json.loads(config.read_text())["observability"]["usage"]["usage-statistics-enabled"])
+        config.write_text('{"observability": {"usage": {"usage-statistics-enabled": false}}}')
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertFalse(saved["observability"]["usage"]["usage-statistics-enabled"])
+
+    def test_manager_uses_management_password_without_exposing_it(self):
+        startup.prepare(self.data)
+        runtime = self.data / "runtime"
+        runtime.mkdir()
+        environment, key_file = startup.prepare_manager(self.data, runtime)
+        password = self.options["management_password"]
+        self.assertEqual(key_file.read_text(), password)
+        self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(runtime.stat().st_mode & 0o777, 0o700)
+        self.assertNotIn(password, json.dumps(environment))
+        self.assertEqual(environment["CPA_MANAGEMENT_KEY_FILE"], str(key_file))
+        self.assertEqual(environment["CPA_MANAGER_ADMIN_KEY_FILE"], str(key_file))
+        self.assertEqual(environment["CPA_UPSTREAM_URL"], "http://127.0.0.1:8317")
+        self.assertEqual(environment["USAGE_DB_PATH"], str(self.data / "cpa-manager-plus" / "usage.sqlite"))
+        self.assertEqual((self.data / "cpa-manager-plus").stat().st_mode & 0o777, 0o700)
+
+    def test_admin_key_sync_skips_first_start_and_resets_existing_database(self):
+        startup.prepare(self.data)
+        runtime = self.data / "runtime"
+        runtime.mkdir()
+        environment, key_file = startup.prepare_manager(self.data, runtime)
+        record = self.data / "calls"
+        binary = self.data / "fake-manager"
+        binary.write_text(f"#!{sys.executable}\nimport sys\nopen({str(record)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n")
+        binary.chmod(0o700)
+        self.assertTrue(startup.sync_admin_key(str(binary), environment, key_file))
+        self.assertFalse(record.exists())
+        Path(environment["USAGE_DB_PATH"]).write_text("database")
+        self.assertTrue(startup.sync_admin_key(str(binary), environment, key_file))
+        self.assertEqual(record.read_text().split(), ["reset-admin-key", "--db-path", environment["USAGE_DB_PATH"],
+                                                      "--admin-key-file", str(key_file)])
+
+    def test_supervisor_stops_remaining_process_when_one_exits(self):
+        status = startup.supervise([([sys.executable, "-c", "import time; time.sleep(60)"], {}),
+                                    ([sys.executable, "-c", "raise SystemExit(3)"], {})])
+        self.assertEqual(status, 3)
 
 if __name__ == "__main__":
     unittest.main()
