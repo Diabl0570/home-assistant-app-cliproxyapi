@@ -1,13 +1,21 @@
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import yaml
 
 
+STRATEGIES = ("round-robin", "fill-first", "weighted-round-robin")
+# A subset of Go durations, which CLIProxyAPI parses: 1h, 30m, 2h30m, 90s.
+TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
+
+
 def section(config, key):
-    value = config.setdefault(key, {})
+    value = config.get(key)
+    if value is None:
+        value = config[key] = {}
     if not isinstance(value, dict):
         raise ValueError(f"Configuration section {key} must be a mapping")
     return value
@@ -28,6 +36,17 @@ def prepare(data=Path("/data")):
         raise ValueError("Use separate management and client API credentials")
     if not isinstance(logging, bool):
         raise ValueError("logging must be true or false")
+    strategy = options.get("routing_strategy", "round-robin")
+    affinity = options.get("session_affinity", True)
+    ttl = options.get("session_affinity_ttl", "1h")
+    switch = options.get("auto_switch_accounts", True)
+    if strategy not in STRATEGIES:
+        raise ValueError("routing_strategy must be round-robin, fill-first or weighted-round-robin")
+    if not isinstance(affinity, bool) or not isinstance(switch, bool):
+        raise ValueError("session_affinity and auto_switch_accounts must be true or false")
+    match = TTL.fullmatch(ttl) if isinstance(ttl, str) else None
+    if not match or not any(int(part or 0) for part in match.groups()):
+        raise ValueError("session_affinity_ttl must be a positive duration such as 1h or 30m")
     config_path = data / "cliproxy.yaml"
     config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
     if not isinstance(config, dict):
@@ -46,6 +65,13 @@ def prepare(data=Path("/data")):
     section(config, "oauth")["auth-dir"] = str(auths)
     logs = section(section(config, "observability"), "logs")
     logs.update({"debug": logging, "logging-to-file": False, "request-log": False})
+    routing = section(config, "routing")
+    routing.update({"strategy": strategy, "session-affinity": affinity,
+                    "session-affinity-ttl": ttl})
+    # Switching tries other accounts for a failed request and benches the failed account.
+    section(routing, "retry").update({"request-retry": 3 if switch else 0,
+                                      "max-retry-credentials": 0 if switch else 1})
+    section(routing, "cooldown")["disable-cooling"] = not switch
     # JSON is valid YAML and cannot interpret user strings as YAML structure.
     descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=data)
     try:
@@ -71,7 +97,8 @@ if __name__ == "__main__":
         config = prepare()
     except (ValueError, OSError, yaml.YAMLError):
         print("CLIProxyAPI configuration invalid: check app options and persistent YAML. "
-              "API keys must be nonempty; use a separate management password with 24+ characters.",
+              "API keys must be nonempty; use a separate management password with 24+ characters; "
+              "session_affinity_ttl must be a duration such as 1h or 30m.",
               file=sys.stderr)
         sys.exit(1)
     os.execv("/usr/local/bin/cli-proxy-api", ["cli-proxy-api", "-config", str(config)])

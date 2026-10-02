@@ -1,5 +1,5 @@
 name: CLIProxyAPI
-version: "8.0.4-3"
+version: "8.0.4-4"
 image: ghcr.io/diabl0570/home-assistant-app-cliproxyapi-{arch}
 slug: cliproxyapi
 description: OpenAI-compatible CLIProxyAPI server as a Home Assistant app
@@ -28,8 +28,16 @@ options:
   api_keys: []
   management_password: ""
   logging: false
+  routing_strategy: round-robin
+  session_affinity: true
+  session_affinity_ttl: 1h
+  auto_switch_accounts: true
 schema:
   api_keys:
     - str
   management_password: password
   logging: bool
+  routing_strategy: list(round-robin|fill-first|weighted-round-robin)
+  session_affinity: bool
+  session_affinity_ttl: str
+  auto_switch_accounts: bool

@@ -7,6 +7,10 @@
 | `api_keys` | Nonempty list of client API keys, used as Bearer credentials. These are separate from provider keys. |
 | `management_password` | A separate random password with at least 24 characters for the management panel/API. |
 | `logging` | Debug logging to the Home Assistant app log; false by default. Request/response logging is disabled. Debug logs may contain provider details. |
+| `routing_strategy` | How new conversations spread over your accounts: `round-robin` (default), `fill-first` or `weighted-round-robin`. See [Routing](#routing). |
+| `session_affinity` | Keep one conversation on the same account; true by default. |
+| `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
+| `auto_switch_accounts` | Switch to another account automatically when an account runs out of quota or fails; true by default. |
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
@@ -22,27 +26,34 @@ OAuth login may redirect your browser to `localhost`, meaning the computer with 
 
 The app's private `/data` holds `cliproxy.yaml` and `auths/`. Provider keys, provider settings and OAuth auth files survive restarts and app updates. They are included in Home Assistant app backups; protect your backups. Existing YAML written by the management panel is read safely on startup, merged, and serialized as JSON (valid YAML).
 
-App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging. Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
+App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging, and the routing fields listed under [Routing](#routing). Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
 
-## Session affinity (routing)
+## Routing
 
-By default CLIProxyAPI routes plain round-robin with session affinity off. Session affinity keeps one conversation on the same account, so the provider's prompt cache can be reused, while new conversations still spread over the pool. Example routing settings:
+The routing options decide which of your provider accounts serves a request. The defaults keep one conversation on one account, so the provider's prompt cache can be reused, spread new conversations over all accounts, and switch accounts automatically when one runs out of quota or fails.
 
-```json
-{
-  "strategy": "round-robin",
-  "session-affinity": true,
-  "session-affinity-ttl": "1h",
-  "session-affinity-subagents": true
-}
-```
+To change them, open the app in Home Assistant, go to the **Configuration** tab, edit the options and select **Save**, then restart the app. An existing install that predates these options gets the defaults on its next start.
 
-- `session-affinity-ttl`: a binding expires after this much idle time; each request in the conversation renews it.
-- `session-affinity-subagents`: subagents with a parent session stay on the parent's account.
-- If the bound account runs out of quota or fails, CLIProxyAPI switches to another account automatically.
+The app writes the options into the proxy's persistent config, `/data/cliproxy.yaml`, on every start:
+
+| Option | Default | Routing field in the proxy config |
+| --- | --- | --- |
+| `routing_strategy` | `round-robin` | `strategy` |
+| `session_affinity` | `true` | `session-affinity` |
+| `session_affinity_ttl` | `1h` | `session-affinity-ttl` |
+| `auto_switch_accounts` | `true` | `retry.request-retry` (3, or 0 when off), `retry.max-retry-credentials` (0 = try every account, or 1 when off), `cooldown.disable-cooling` (false, or true when off) |
+
+- `routing_strategy`: `round-robin` rotates over the accounts, `fill-first` uses the first account until it is unavailable, and `weighted-round-robin` rotates in proportion to each account's weight.
+- `session_affinity_ttl`: a binding expires after this much idle time; each request in the conversation renews it. Use hours, minutes and seconds in that order, such as `1h`, `45m` or `1h30m`.
+- `auto_switch_accounts`: when on, a request that fails on one account is retried on the other accounts, and the failed account is paused (cooled down) so later requests and its bound conversations move to another account. When off, a failed request returns the error without trying another account and failed accounts are not paused. Retry and cooldown overrides set on an individual provider or credential still take precedence.
+- If session affinity is on and the bound account runs out of quota or fails, CLIProxyAPI moves the conversation to another account automatically.
 - Bindings are kept in memory only and are lost on restart.
 
-Routing is not an app option. It is stored in the proxy's persistent config, `/data/cliproxy.yaml`; the startup wrapper does not manage it, so it survives restarts and app updates. Set it in the management panel, or with the management API using the management password:
+Other routing fields, such as `session-affinity-subagents` (subagents with a parent session stay on the parent's account; true by default) and `retry.max-retry-interval`, are not app options. The app leaves them as they are in `/data/cliproxy.yaml`, so they survive restarts and app updates; set them in the management panel or with the management API.
+
+**Precedence:** the app options are applied at every start. A change to a field in the table above made in the management panel or management API applies live, but lasts only until the next restart, when the app options overwrite it. To make a lasting change, change the app option.
+
+To inspect or briefly test routing without a restart, use the management API with the management password:
 
 ```sh
 curl -X PATCH -H 'Authorization: Bearer <management-key>' -H 'Content-Type: application/json' \
@@ -58,7 +69,7 @@ API and management share TCP 8317; default mapping is LAN-accessible HTTP. Use o
 
 ## Troubleshooting
 
-- Startup stops: supply nonempty client keys and a separate 24+ character management password.
+- Startup stops: supply nonempty client keys and a separate 24+ character management password, and a `session_affinity_ttl` such as `1h` or `30m`.
 - Models list empty: configure/import at least one provider first.
 - UI unavailable: check app logs, port mapping and outbound access for the initial panel download.
 - Image pull denied: maintainer must publish the corresponding image version and make its GHCR package public.
