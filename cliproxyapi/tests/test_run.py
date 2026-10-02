@@ -43,18 +43,13 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(saved["routing"], {
             "strategy": "round-robin", "session-affinity": True, "session-affinity-ttl": "1h",
             "retry": {"request-retry": 3, "max-retry-credentials": 0},
-            "cooldown": {"disable-cooling": False},
         })
 
     def test_each_routing_option_overrides_its_default(self):
         cases = [
             ("routing_strategy", "fill-first", ["strategy"], "fill-first"),
-            ("routing_strategy", "weighted-round-robin", ["strategy"], "weighted-round-robin"),
             ("session_affinity", False, ["session-affinity"], False),
             ("session_affinity_ttl", "2h30m", ["session-affinity-ttl"], "2h30m"),
-            ("auto_switch_accounts", False, ["retry", "request-retry"], 0),
-            ("auto_switch_accounts", False, ["retry", "max-retry-credentials"], 1),
-            ("auto_switch_accounts", False, ["cooldown", "disable-cooling"], True),
         ]
         for option, value, path, expected in cases:
             with self.subTest(option=option, path=path):
@@ -63,6 +58,15 @@ class StartupTests(unittest.TestCase):
                 for key in path:
                     routing = routing[key]
                 self.assertEqual(routing, expected)
+
+    def test_retry_other_accounts_sets_only_request_retry_fields(self):
+        for value, retry in [(True, {"request-retry": 3, "max-retry-credentials": 0}),
+                             (False, {"request-retry": 0, "max-retry-credentials": 1})]:
+            with self.subTest(value=value):
+                (self.data / "options.json").write_text(json.dumps({**self.options, "retry_other_accounts": value}))
+                routing = json.loads(startup.prepare(self.data).read_text())["routing"]
+                self.assertEqual(routing, {"strategy": "round-robin", "session-affinity": True,
+                                           "session-affinity-ttl": "1h", "retry": retry})
 
     def test_routing_options_replace_existing_routing_values(self):
         config = startup.prepare(self.data)
@@ -74,7 +78,7 @@ class StartupTests(unittest.TestCase):
             "strategy": "round-robin", "session-affinity": True, "session-affinity-ttl": "1h",
             "session-affinity-subagents": False,
             "retry": {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30},
-            "cooldown": {"disable-cooling": False, "save-cooldown-status": True},
+            "cooldown": {"disable-cooling": True, "save-cooldown-status": True},
         })
 
     def test_empty_routing_section_gets_defaults(self):
@@ -86,7 +90,8 @@ class StartupTests(unittest.TestCase):
         config = startup.prepare(self.data)
         original = config.read_bytes()
         for field, value in [("api_keys", []), ("api_keys", [""]), ("api_keys", [1]), ("management_password", "short"), ("logging", "false"),
-                             ("routing_strategy", "random"), ("session_affinity", "true"), ("auto_switch_accounts", 1),
+                             ("routing_strategy", "random"), ("routing_strategy", "weighted-round-robin"),
+                             ("session_affinity", "true"), ("retry_other_accounts", 1),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
                              ("session_affinity_ttl", "-1h"), ("session_affinity_ttl", 3600)]:
             with self.subTest(field=field, value=value):

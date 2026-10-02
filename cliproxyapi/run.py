@@ -7,7 +7,7 @@ import tempfile
 import yaml
 
 
-STRATEGIES = ("round-robin", "fill-first", "weighted-round-robin")
+STRATEGIES = ("round-robin", "fill-first")
 # A subset of Go durations, which CLIProxyAPI parses: 1h, 30m, 2h30m, 90s.
 TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
 
@@ -39,11 +39,11 @@ def prepare(data=Path("/data")):
     strategy = options.get("routing_strategy", "round-robin")
     affinity = options.get("session_affinity", True)
     ttl = options.get("session_affinity_ttl", "1h")
-    switch = options.get("auto_switch_accounts", True)
+    retry = options.get("retry_other_accounts", True)
     if strategy not in STRATEGIES:
-        raise ValueError("routing_strategy must be round-robin, fill-first or weighted-round-robin")
-    if not isinstance(affinity, bool) or not isinstance(switch, bool):
-        raise ValueError("session_affinity and auto_switch_accounts must be true or false")
+        raise ValueError("routing_strategy must be round-robin or fill-first")
+    if not isinstance(affinity, bool) or not isinstance(retry, bool):
+        raise ValueError("session_affinity and retry_other_accounts must be true or false")
     match = TTL.fullmatch(ttl) if isinstance(ttl, str) else None
     if not match or not any(int(part or 0) for part in match.groups()):
         raise ValueError("session_affinity_ttl must be a positive duration such as 1h or 30m")
@@ -68,10 +68,9 @@ def prepare(data=Path("/data")):
     routing = section(config, "routing")
     routing.update({"strategy": strategy, "session-affinity": affinity,
                     "session-affinity-ttl": ttl})
-    # Switching tries other accounts for a failed request and benches the failed account.
-    section(routing, "retry").update({"request-retry": 3 if switch else 0,
-                                      "max-retry-credentials": 0 if switch else 1})
-    section(routing, "cooldown")["disable-cooling"] = not switch
+    # Retrying tries the other accounts for a failed request; off limits it to one account.
+    section(routing, "retry").update({"request-retry": 3 if retry else 0,
+                                      "max-retry-credentials": 0 if retry else 1})
     # JSON is valid YAML and cannot interpret user strings as YAML structure.
     descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=data)
     try:

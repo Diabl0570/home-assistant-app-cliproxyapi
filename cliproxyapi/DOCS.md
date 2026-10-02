@@ -7,10 +7,10 @@
 | `api_keys` | Nonempty list of client API keys, used as Bearer credentials. These are separate from provider keys. |
 | `management_password` | A separate random password with at least 24 characters for the management panel/API. |
 | `logging` | Debug logging to the Home Assistant app log; false by default. Request/response logging is disabled. Debug logs may contain provider details. |
-| `routing_strategy` | How new conversations spread over your accounts: `round-robin` (default), `fill-first` or `weighted-round-robin`. See [Routing](#routing). |
+| `routing_strategy` | How new conversations spread over your accounts: `round-robin` (default) or `fill-first`. See [Routing](#routing). |
 | `session_affinity` | Keep one conversation on the same account; true by default. |
 | `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
-| `auto_switch_accounts` | Switch to another account automatically when an account runs out of quota or fails; true by default. |
+| `retry_other_accounts` | Retry a failed request on your other accounts; true by default. Off only stops that retry within the same request; see [Routing](#routing). |
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
@@ -41,15 +41,15 @@ The app writes the options into the proxy's persistent config, `/data/cliproxy.y
 | `routing_strategy` | `round-robin` | `strategy` |
 | `session_affinity` | `true` | `session-affinity` |
 | `session_affinity_ttl` | `1h` | `session-affinity-ttl` |
-| `auto_switch_accounts` | `true` | `retry.request-retry` (3, or 0 when off), `retry.max-retry-credentials` (0 = try every account, or 1 when off), `cooldown.disable-cooling` (false, or true when off) |
+| `retry_other_accounts` | `true` | `retry.request-retry` (3, or 0 when off), `retry.max-retry-credentials` (0 = try every account, or 1 when off) |
 
-- `routing_strategy`: `round-robin` rotates over the accounts, `fill-first` uses the first account until it is unavailable, and `weighted-round-robin` rotates in proportion to each account's weight.
+- `routing_strategy`: `round-robin` rotates over the accounts, and `fill-first` uses the first account until it is unavailable.
 - `session_affinity_ttl`: a binding expires after this much idle time; each request in the conversation renews it. Use hours, minutes and seconds in that order, such as `1h`, `45m` or `1h30m`.
-- `auto_switch_accounts`: when on, a request that fails on one account is retried on the other accounts, and the failed account is paused (cooled down) so later requests and its bound conversations move to another account. When off, a failed request returns the error without trying another account and failed accounts are not paused. Retry and cooldown overrides set on an individual provider or credential still take precedence.
+- `retry_other_accounts`: when on, a request that fails on one account is retried on your other accounts within that same request. When off, a failed request returns the error without trying another account. Turning it off only stops retrying another account within the same request: CLIProxyAPI 8.0.4 still moves a conversation to another account after a credential failure such as a 429, so the conversation's next request can go to a different account. Retry overrides set on an individual provider or credential still take precedence.
 - If session affinity is on and the bound account runs out of quota or fails, CLIProxyAPI moves the conversation to another account automatically.
 - Bindings are kept in memory only and are lost on restart.
 
-Other routing fields, such as `session-affinity-subagents` (subagents with a parent session stay on the parent's account; true by default) and `retry.max-retry-interval`, are not app options. The app leaves them as they are in `/data/cliproxy.yaml`, so they survive restarts and app updates; set them in the management panel or with the management API.
+Other routing fields, such as `session-affinity-subagents` (subagents with a parent session stay on the parent's account; true by default), `retry.max-retry-interval` and the `cooldown` settings, are not app options. The app leaves them as they are in `/data/cliproxy.yaml`, so they survive restarts and app updates; set them in the management panel or with the management API.
 
 **Precedence:** the app options are applied at every start. A change to a field in the table above made in the management panel or management API applies live, but lasts only until the next restart, when the app options overwrite it. To make a lasting change, change the app option.
 

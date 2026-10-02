@@ -31,13 +31,13 @@ options:
   routing_strategy: round-robin
   session_affinity: true
   session_affinity_ttl: 1h
-  auto_switch_accounts: true
+  retry_other_accounts: true
 schema:
   api_keys:
     - str
   management_password: password
   logging: bool
-  routing_strategy: list(round-robin|fill-first|weighted-round-robin)
+  routing_strategy: list(round-robin|fill-first)
   session_affinity: bool
   session_affinity_ttl: str
-  auto_switch_accounts: bool
+  retry_other_accounts: bool
