@@ -32,7 +32,7 @@ gh repo create Diabl0570/home-assistant-app-cliproxyapi --public --source=. --re
 
 Published image tags are immutable: bump the app version wrapper suffix (for example `8.0.4-2`) for changes after a version is published. A rerun of the same commit can reuse its existing image, including after changing package visibility.
 
-The build uses Debian glibc, upstream release 8.0.4 and CPA Manager Plus 1.14.2 with their official SHA-256 checksums. `cliproxyapi/updater.json` and `cliproxyapi/manager-plus.json` are the authoritative upstream pins. Local verification:
+The build uses Debian glibc and the CLIProxyAPI and CPA Manager Plus releases pinned, with their official SHA-256 checksums, in `cliproxyapi/updater.json` and `cliproxyapi/manager-plus.json`; these files are the authoritative upstream pins. Local verification:
 
 ```sh
 python3 -m pip install PyYAML==6.0.2

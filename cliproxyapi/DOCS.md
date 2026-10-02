@@ -77,7 +77,7 @@ PATCH keeps routing fields you leave out; PUT replaces the whole routing section
 
 ## Network
 
-API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317. Both default mappings are LAN-accessible HTTP and protected by the management password. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
+API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317. Both default mappings are LAN-accessible HTTP; the API requires a client key and both panels require the management password. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
 
 ## Troubleshooting
 

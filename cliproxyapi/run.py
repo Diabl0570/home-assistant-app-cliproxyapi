@@ -32,6 +32,7 @@ def prepare(data=Path("/data")):
         not isinstance(key, str) or not key.strip() for key in keys
     ):
         raise ValueError("Set at least one nonempty api_keys value in app configuration")
+    # CPA Manager Plus trims key files; padding would split proxy and manager credentials.
     if not isinstance(password, str) or len(password) < 24 or password != password.strip():
         raise ValueError("Set management_password to a random password of at least 24 characters "
                          "without leading or trailing spaces")
