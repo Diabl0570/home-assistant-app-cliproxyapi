@@ -11,6 +11,7 @@
 | `session_affinity` | Keep one conversation on the same account; true by default. |
 | `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
 | `retry_other_accounts` | Retry a failed request on your other accounts; true by default. Off only stops that retry within the same request; see [Routing](#routing). |
+| `blocked_models` | Exact model IDs, without a credential prefix, that the proxy neither lists nor serves; `gpt-6-sol` and `gpt-5.6-sol` by default, plus Devin's `devin/gpt-6-sol` and `devin/gpt-5-6-sol`. An empty list blocks nothing. See [Blocked models](#blocked-models) for the limits. |
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
@@ -38,7 +39,7 @@ OAuth login may redirect your browser to `localhost`, meaning the computer with 
 
 The app's private `/data` holds `cliproxy.yaml`, `auths/` and `cpa-manager-plus/`. Provider keys, provider settings and OAuth auth files survive restarts and app updates. They are included in Home Assistant app backups; protect your backups. Existing YAML written by the management panel is read safely on startup, merged, and serialized as JSON (valid YAML).
 
-App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging, the routing fields listed under [Routing](#routing), and the CPA Manager Plus admin key and proxy connection. Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
+App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging, the routing fields listed under [Routing](#routing), the model exclusions listed under [Blocked models](#blocked-models), and the CPA Manager Plus admin key and proxy connection. Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
 
 ## Routing
 
@@ -75,13 +76,40 @@ curl -X PATCH -H 'Authorization: Bearer <management-key>' -H 'Content-Type: appl
 
 PATCH keeps routing fields you leave out; PUT replaces the whole routing section. The change applies live without a restart, and every routing change resets the in-memory affinity bindings. Read the routing settings back with `GET /v8/management/config/routing` only. Do not use a whole-config read (`/v8/management/config` or `/v8/management/config.yaml`) for this: it is not secret-redacted and includes client API keys and the management password.
 
+## Blocked models
+
+`blocked_models` lists the model IDs the proxy hides and refuses. By default it blocks GPT-6 Sol and GPT-5.6 Sol: `gpt-6-sol` and `gpt-5.6-sol` from Codex, and `devin/gpt-6-sol` and `devin/gpt-5-6-sol` from Devin. Of the Sol models, only `gpt-6.1-sol` stays available. A blocked model is missing from `/v1/models`, also under any credential prefix. A request naming it gets `400 model_not_found` without reaching any account. Other models keep working. The paths listed at the end of this section are not covered.
+
+To change the list, open the app in Home Assistant, go to the **Configuration** tab, add or remove model IDs under `blocked_models`, select **Save**, then restart the app. Each entry is one exact model ID, compared case-insensitively. `*` is not allowed. Remove every entry to block nothing.
+
+Use the model ID without a credential routing prefix. A credential with a prefix such as `work` lists its models as `work/gpt-6-sol`. The entry `gpt-6-sol` also blocks `work/gpt-6-sol` and every other prefixed copy, while an entry `work/gpt-6-sol` blocks nothing. Devin is the exception: `devin/` is part of Devin's own model IDs, not a routing prefix, so Devin models are listed as `devin/gpt-6-sol`. An existing install that predates this option gets the default list on its next start.
+
+The app owns these exclusion fields in `/data/cliproxy.yaml` and rewrites them from the option on every start:
+
+- `oauth.excluded-models`: one list per OAuth provider, for `codex`, `devin` and the other built-in providers, plus any provider already in that section. It covers every OAuth account and imported auth file. A legacy `oauth-excluded-models` section is removed.
+- `excluded-models` on each provider API key group under `api-keys`, or on each entry of a legacy list such as `codex-api-key`. It covers API key credentials.
+- `excluded-models` on a key inside a group. A key's own list would replace its group's, so the app removes it and the key uses its group's list. A key that sets its own `models` gets its own list instead.
+- On an API key, CLIProxyAPI matches the name clients use: a model's alias, or else its name. In the `models` of a group, key or legacy entry, the app also excludes, for that credential, each such name that a request can send to a blocked model. For example, `{name: gpt-6-sol, alias: legacy-sol}` hides `legacy-sol`, and a model named `gpt-6-sol(high)` is hidden like `gpt-6-sol`.
+- CLIProxyAPI sends an alias to the first entry that matches it exactly or without its thinking suffix, and serves a request for `sol(high)` through the name `sol`. So `{name: gpt-6-sol, alias: sol(high)}` also hides `sol`, wherever it appears in the list. When the first entry for `sol` is `{name: gpt-6.1-sol, alias: sol}`, a later `{name: gpt-6-sol, alias: sol}` never receives requests, and `sol` stays available.
+
+Exclusions you set yourself in these fields, in the YAML or in the management panel, are replaced with the option list at the next start. An empty list removes them. A change to these fields made in the management panel applies live, but only until the next restart.
+
+A new OAuth account is covered as soon as it is added, because its provider's list already exists. A provider API key added in the management panel gets the exclusions at the next restart. Restart the app after adding one.
+
+CLIProxyAPI 8.0.4 has no exclusion setting for these paths, so the block cannot cover them:
+
+- An `openai-compatibility` provider serves the models you list for it. Do not list a blocked model there.
+- An OAuth model alias (`oauth.model-alias`) you name after a blocked model, such as `{name: gpt-6.1-sol, alias: gpt-6-sol}`, appears in `/v1/models` under that name. It serves the model it aliases (here GPT-6.1 Sol), not the blocked one.
+- An OAuth model alias whose target is a blocked model, in `oauth.model-alias` or in an account's auth file, can still send requests to the blocked model. For example, `{name: gpt-6-sol, alias: gpt-6.1-sol}` sends requests for `gpt-6.1-sol` to GPT-6 Sol. Remove every alias that targets a blocked model.
+- Models added by a CLIProxyAPI plugin are not filtered.
+
 ## Network
 
 API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317. Both default mappings are LAN-accessible HTTP; the API requires a client key and both panels require the management password. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
 
 ## Troubleshooting
 
-- Startup stops: supply nonempty client keys and a separate 24+ character management password without leading or trailing spaces, and a `session_affinity_ttl` such as `1h` or `30m`.
+- Startup stops: supply nonempty client keys and a separate 24+ character management password without leading or trailing spaces, a `session_affinity_ttl` such as `1h` or `30m`, and only exact model IDs without `*` in `blocked_models`.
 - Startup stops with "admin key could not be reset": CPA Manager Plus could not take the current `management_password`, so the app refuses to start rather than keep the previous password valid. Restart the app to retry.
 - Models list empty: configure/import at least one provider first.
 - UI unavailable: check app logs and port mapping; the stock panel also needs outbound access for its initial download.

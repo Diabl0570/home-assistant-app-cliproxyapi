@@ -12,6 +12,14 @@ MANAGER_PORT = 18317
 STRATEGIES = ("round-robin", "fill-first")
 # A subset of Go durations, which CLIProxyAPI parses: 1h, 30m, 2h30m, 90s.
 TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
+# Devin lists its models as devin/<id> and names GPT-5.6 Sol gpt-5-6-sol.
+BLOCKED_MODELS = ["gpt-6-sol", "gpt-5.6-sol", "devin/gpt-6-sol", "devin/gpt-5-6-sol"]
+# CLIProxyAPI 8.0.4 looks up OAuth exclusions per provider; there is no global list.
+OAUTH_PROVIDERS = ("aistudio", "antigravity", "claude", "codex", "devin", "gemini", "kimi", "meta", "vertex", "xai")
+# Provider API key families that support excluded-models, as v8 group names and legacy keys.
+API_KEY_FAMILIES = {"gemini": "gemini-api-key", "interactions": "interactions-api-key",
+                    "vertex": "vertex-api-key", "codex": "codex-api-key", "claude": "claude-api-key",
+                    "xai": "xai-api-key", "meta": "meta-api-key"}
 
 
 def section(config, key):
@@ -21,6 +29,102 @@ def section(config, key):
     if not isinstance(value, dict):
         raise ValueError(f"Configuration section {key} must be a mapping")
     return value
+
+
+def entries(value, name):
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(entry, dict) for entry in value):
+        raise ValueError(f"{name} must be a list of mappings")
+    return value
+
+
+def upstream(model):
+    """The model CLIProxyAPI sends upstream, without a thinking suffix such as (high)."""
+    model = model.strip().lower()
+    if model.endswith(")") and "(" in model:
+        model = model[:model.rindex("(")]
+    return model.strip()
+
+
+def text(value):
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def exclusions(blocked, models, name):
+    """The blocked models plus each configured client ID that a request can send to one."""
+    models = entries(models, name)
+    # CLIProxyAPI 8.0.4 maps each alias and name, exact and without a thinking suffix, to the first entry's model.
+    targets = {}
+    for model in models:
+        target, alias = text(model.get("name")), text(model.get("alias"))
+        if target and alias:
+            for key in (alias, upstream(alias), target, upstream(target)):
+                targets.setdefault(key, target)
+
+    def sends(request):
+        return upstream(targets.get(request) or targets.get(upstream(request)) or request)
+
+    # For an API key, CLIProxyAPI matches exclusions against a model's client ID: its alias, or else its name.
+    # A request routes by its ID without a thinking suffix, so sol(high) is served through the ID sol.
+    ids = []
+    for model in models:
+        client = text(model.get("alias")) or text(model.get("name"))
+        requests = [client, *(key for key in targets if upstream(key) == client)]
+        if client and any(sends(request) in blocked for request in requests):
+            ids.append(client)
+    return list(dict.fromkeys(blocked + ids))
+
+
+def own(owner, excluded):
+    """Rewrite an exclusion field the app owns; nothing blocked leaves no field."""
+    if excluded:
+        owner["excluded-models"] = excluded
+    else:
+        owner.pop("excluded-models", None)
+
+
+def block_models(config, blocked):
+    oauth = section(config, "oauth")
+    # A present v8 field replaces its legacy field, even when null.
+    current = oauth.get("excluded-models") if "excluded-models" in oauth else config.get("oauth-excluded-models")
+    config.pop("oauth-excluded-models", None)
+    if current is not None and not isinstance(current, dict):
+        raise ValueError("oauth.excluded-models must be a mapping")
+    # CLIProxyAPI trims and lowercases provider names, so equivalent names share one entry.
+    providers = dict.fromkeys([*OAUTH_PROVIDERS, *(str(provider).strip().lower() for provider in current or {})])
+    own(oauth, {provider: blocked for provider in providers} if blocked else {})
+    # API key credentials ignore the OAuth list, so each provider key group gets its own copy.
+    groups = config.get("api-keys")
+    groups = groups if isinstance(groups, dict) else {}
+    for family, legacy in API_KEY_FAMILIES.items():
+        if family not in groups:
+            # CLIProxyAPI reads a legacy family only when api-keys has no entry for it.
+            for entry in entries(config.get(legacy), legacy):
+                own(entry, exclusions(blocked, entry.get("models"), f"{legacy} models"))
+            continue
+        for group in entries(groups[family], f"api-keys.{family}"):
+            own(group, exclusions(blocked, group.get("models"), f"api-keys.{family} models"))
+            # A key's own list replaces its group's, so only a key with its own models keeps one.
+            for key in entries(group.get("keys"), f"api-keys.{family} keys"):
+                models = key.get("models")
+                own(key, [] if models is None else exclusions(blocked, models, f"api-keys.{family} models"))
+
+
+def write(path, value):
+    # JSON is valid YAML and cannot interpret user strings as YAML structure.
+    descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(value, output, ensure_ascii=False, indent=2, allow_nan=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    path.chmod(0o600)
 
 
 def prepare(data=Path("/data")):
@@ -51,6 +155,13 @@ def prepare(data=Path("/data")):
     match = TTL.fullmatch(ttl) if isinstance(ttl, str) else None
     if not match or not any(int(part or 0) for part in match.groups()):
         raise ValueError("session_affinity_ttl must be a positive duration such as 1h or 30m")
+    blocked = options.get("blocked_models", BLOCKED_MODELS)
+    # CLIProxyAPI compares exclusions trimmed and lowercased, and reads * as a wildcard.
+    if not isinstance(blocked, list) or any(
+        not isinstance(model, str) or not model.strip() or "*" in model for model in blocked
+    ):
+        raise ValueError("blocked_models must be a list of exact model names")
+    blocked = list(dict.fromkeys(model.strip().lower() for model in blocked))
     config_path = data / "cliproxy.yaml"
     config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
     if not isinstance(config, dict):
@@ -77,19 +188,8 @@ def prepare(data=Path("/data")):
     # Retrying tries the other accounts for a failed request; off limits it to one account.
     section(routing, "retry").update({"request-retry": 3 if retry else 0,
                                       "max-retry-credentials": 0 if retry else 1})
-    # JSON is valid YAML and cannot interpret user strings as YAML structure.
-    descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=data)
-    try:
-        with os.fdopen(descriptor, "w") as output:
-            json.dump(config, output, ensure_ascii=False, indent=2, allow_nan=False)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, config_path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    config_path.chmod(0o600)
+    block_models(config, blocked)
+    write(config_path, config)
     for credential in auths.rglob("*"):
         if credential.is_file():
             credential.chmod(0o600)
@@ -175,7 +275,8 @@ def main(data=Path("/data"), proxy="/usr/local/bin/cli-proxy-api",
         print("CLIProxyAPI configuration invalid: check app options and persistent YAML. "
               "API keys must be nonempty; use a separate management password with 24+ characters "
               "and no leading or trailing spaces; "
-              "session_affinity_ttl must be a duration such as 1h or 30m.", file=sys.stderr)
+              "session_affinity_ttl must be a duration such as 1h or 30m; "
+              "blocked_models must list exact model names without *.", file=sys.stderr)
         return 1
     if not sync_admin_key(manager, manager_environment, key_file):
         print("CPA Manager Plus admin key could not be reset to the current management password; "
