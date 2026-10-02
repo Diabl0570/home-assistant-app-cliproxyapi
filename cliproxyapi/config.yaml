@@ -37,6 +37,8 @@ options:
   blocked_models:
     - gpt-6-sol
     - gpt-5.6-sol
+    - devin/gpt-6-sol
+    - devin/gpt-5-6-sol
 schema:
   api_keys:
     - str

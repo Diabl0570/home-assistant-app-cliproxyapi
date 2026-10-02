@@ -7,10 +7,12 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import yaml
 
 spec = importlib.util.spec_from_file_location("startup", Path(__file__).parents[1] / "run.py")
 startup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(startup)
+BLOCKED = ["gpt-6-sol", "gpt-5.6-sol", "devin/gpt-6-sol", "devin/gpt-5-6-sol"]
 
 class StartupTests(unittest.TestCase):
     def setUp(self):
@@ -22,6 +24,10 @@ class StartupTests(unittest.TestCase):
 
     def write_options(self):
         (self.data / "options.json").write_text(json.dumps(self.options))
+
+    def write_config(self, config, value):
+        config.write_text(json.dumps(value))
+        return json.loads(startup.prepare(self.data).read_text())
 
     def test_strings_are_data_and_files_are_private(self):
         config = startup.prepare(self.data)
@@ -90,56 +96,84 @@ class StartupTests(unittest.TestCase):
         routing = json.loads(startup.prepare(self.data).read_text())["routing"]
         self.assertEqual(routing["session-affinity-ttl"], "1h")
 
-    def test_blocked_models_default_covers_every_credential_type(self):
-        config = startup.prepare(self.data)
-        config.write_text("api-keys:\n  codex:\n    - name: personal\n      keys:\n        - api-key: one\n"
-                          "        - api-key: two\n          excluded-models: []\n"
-                          "codex-api-key:\n  - api-key: legacy\n")
-        saved = json.loads(startup.prepare(self.data).read_text())
-        blocked = ["gpt-6-sol", "gpt-5.6-sol"]
-        oauth = saved["oauth"]["excluded-models"]
-        self.assertEqual(oauth["codex"], blocked)
+    def test_blocked_models_default_covers_every_oauth_provider(self):
+        oauth = json.loads(startup.prepare(self.data).read_text())["oauth"]["excluded-models"]
         self.assertEqual(set(oauth), set(startup.OAUTH_PROVIDERS))
-        self.assertTrue(all(models == blocked for models in oauth.values()))
+        self.assertTrue(all(models == BLOCKED for models in oauth.values()))
+        defaults = yaml.safe_load((Path(__file__).parents[1] / "config.yaml").read_text())["options"]
+        self.assertEqual(defaults["blocked_models"], BLOCKED)
+
+    def test_blocked_models_cover_api_key_groups_and_keys(self):
+        saved = self.write_config(startup.prepare(self.data), {
+            "api-keys": {"codex": [{"name": "personal", "excluded-models": ["o3"], "keys": [
+                {"api-key": "inherits"},
+                {"api-key": "clears", "excluded-models": []},
+                {"api-key": "own-models", "models": [{"name": "GPT-6-Sol", "alias": "Legacy-Sol"},
+                                                     {"name": "gpt-6.1-sol", "alias": "sol"}]},
+            ]}]},
+            # api-keys.codex replaces the legacy family, so CLIProxyAPI never reads this entry.
+            "codex-api-key": [{"api-key": "ignored", "models": "not-a-list"}],
+        })
         group = saved["api-keys"]["codex"][0]
-        self.assertEqual(group["excluded-models"], blocked)
+        self.assertEqual(group["excluded-models"], BLOCKED)
         self.assertNotIn("excluded-models", group["keys"][0])
-        self.assertEqual(group["keys"][1]["excluded-models"], blocked)
-        self.assertEqual(saved["codex-api-key"][0]["excluded-models"], blocked)
-        self.assertEqual(json.loads((self.data / "blocked-models.json").read_text()), blocked)
+        self.assertNotIn("excluded-models", group["keys"][1])
+        self.assertEqual(group["keys"][2]["excluded-models"], [*BLOCKED, "legacy-sol"])
+        self.assertEqual(saved["codex-api-key"], [{"api-key": "ignored", "models": "not-a-list"}])
+
+    def test_blocked_models_cover_aliases_in_group_models(self):
+        saved = self.write_config(startup.prepare(self.data), {"api-keys": {"claude": [{
+            "name": "work", "keys": [{"api-key": "k"}],
+            "models": [{"name": "gpt-5.6-sol", "alias": "old-sol"}, {"name": "gpt-6.1-sol", "alias": "sol"},
+                       {"name": "gpt-6-sol"}],
+        }]}})
+        self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], [*BLOCKED, "old-sol"])
+
+    def test_blocked_models_cover_legacy_api_key_entries(self):
+        saved = self.write_config(startup.prepare(self.data), {"xai-api-key": [
+            {"api-key": "k", "excluded-models": ["*"], "models": [{"name": "gpt-6-sol", "alias": "x"}]},
+        ]})
+        self.assertEqual(saved["xai-api-key"][0]["excluded-models"], [*BLOCKED, "x"])
+
+    def test_oauth_exclusions_replace_legacy_and_merge_provider_names(self):
+        config = startup.prepare(self.data)
+        providers = {*startup.OAUTH_PROVIDERS, "plugin"}
+        cases = [
+            ({"oauth-excluded-models": {" Plugin ": ["x-*"], "codex": ["*"]}}, providers),
+            ({"oauth": {"excluded-models": {"Codex": ["o3"], " codex ": ["o4"], "plugin": []}}}, providers),
+            # A present v8 field wins over the legacy one even when null, as in CLIProxyAPI.
+            ({"oauth": {"excluded-models": None}, "oauth-excluded-models": {"plugin": ["*"]}},
+             set(startup.OAUTH_PROVIDERS)),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                saved = self.write_config(config, value)
+                self.assertNotIn("oauth-excluded-models", saved)
+                oauth = saved["oauth"]["excluded-models"]
+                self.assertEqual(set(oauth), expected)
+                self.assertTrue(all(models == BLOCKED for models in oauth.values()))
 
     def test_blocked_models_option_replaces_the_default(self):
         startup.prepare(self.data)
-        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": [" GPT-6-Sol ", "gpt-6-sol", "o3"]}))
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": [" GPT-6-Sol ", "gpt-6-sol"]}))
         saved = json.loads(startup.prepare(self.data).read_text())
-        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], ["gpt-6-sol", "o3"])
+        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], ["gpt-6-sol"])
 
-    def test_empty_blocked_models_blocks_nothing(self):
-        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": []}))
-        saved = json.loads(startup.prepare(self.data).read_text())
-        self.assertNotIn("excluded-models", saved["oauth"])
-        startup.prepare(self.data)
-        (self.data / "options.json").write_text(json.dumps(self.options))
-        startup.prepare(self.data)
-        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": []}))
-        saved = json.loads(startup.prepare(self.data).read_text())
-        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], [])
-
-    def test_blocked_models_keep_existing_exclusions(self):
+    def test_empty_blocked_models_clears_every_owned_exclusion(self):
         config = startup.prepare(self.data)
-        config.write_text("oauth-excluded-models:\n  codex: [gpt-5-codex-mini, gpt-6-sol]\n  plugin: ['x-*']\n"
-                          "api-keys:\n  claude:\n    - name: work\n      excluded-models: ['*']\n      keys:\n        - api-key: k\n")
-        saved = json.loads(startup.prepare(self.data).read_text())
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": []}))
+        saved = self.write_config(config, {
+            "oauth": {"excluded-models": {"codex": ["gpt-6-sol"]}}, "oauth-excluded-models": {"codex": ["o3"]},
+            "api-keys": {"codex": [{"excluded-models": ["o3"], "keys": [
+                {"api-key": "k", "excluded-models": ["o3"], "models": [{"name": "gpt-6-sol", "alias": "x"}]}]}]},
+            "claude-api-key": [{"api-key": "k", "excluded-models": ["o3"]}],
+        })
+        self.assertNotIn("excluded-models", saved["oauth"])
         self.assertNotIn("oauth-excluded-models", saved)
-        oauth = saved["oauth"]["excluded-models"]
-        self.assertEqual(oauth["codex"], ["gpt-5-codex-mini", "gpt-6-sol", "gpt-5.6-sol"])
-        self.assertEqual(oauth["plugin"], ["x-*", "gpt-6-sol", "gpt-5.6-sol"])
-        self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], ["*", "gpt-6-sol", "gpt-5.6-sol"])
-        # Unblocking removes only what the app added, including a model the user had also excluded.
-        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": ["gpt-5.6-sol"]}))
-        saved = json.loads(startup.prepare(self.data).read_text())
-        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], ["gpt-5-codex-mini", "gpt-5.6-sol"])
-        self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], ["*", "gpt-5.6-sol"])
+        group = saved["api-keys"]["codex"][0]
+        self.assertNotIn("excluded-models", group)
+        self.assertNotIn("excluded-models", group["keys"][0])
+        self.assertNotIn("excluded-models", saved["claude-api-key"][0])
 
     def test_invalid_options_do_not_overwrite_existing_config(self):
         config = startup.prepare(self.data)
@@ -151,7 +185,8 @@ class StartupTests(unittest.TestCase):
                              ("session_affinity", "true"), ("retry_other_accounts", 1),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
                              ("session_affinity_ttl", "-1h"), ("session_affinity_ttl", 3600),
-                             ("blocked_models", "gpt-6-sol"), ("blocked_models", [""]), ("blocked_models", [1])]:
+                             ("blocked_models", "gpt-6-sol"), ("blocked_models", [""]), ("blocked_models", [1]),
+                             ("blocked_models", ["gpt-6-*"]), ("blocked_models", ["*"])]:
             with self.subTest(field=field, value=value):
                 options = dict(self.options)
                 options[field] = value
@@ -225,8 +260,8 @@ class StartupTests(unittest.TestCase):
 
     def test_malformed_exclusions_do_not_overwrite_existing_config(self):
         config = startup.prepare(self.data)
-        for text in ["oauth:\n  excluded-models: [gpt-6-sol]\n", "oauth:\n  excluded-models:\n    codex: gpt-6-sol\n",
-                     "api-keys:\n  codex: {}\n", "codex-api-key:\n  - excluded-models: [1]\n"]:
+        for text in ["oauth:\n  excluded-models: [gpt-6-sol]\n", "api-keys:\n  codex: {}\n",
+                     "api-keys:\n  codex:\n    - keys:\n        - models: gpt-6-sol\n", "codex-api-key:\n  - models: [1]\n"]:
             with self.subTest(text=text):
                 config.write_text(text)
                 with self.assertRaises(ValueError):
