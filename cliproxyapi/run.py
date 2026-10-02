@@ -14,7 +14,7 @@ STRATEGIES = ("round-robin", "fill-first")
 TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
 # Devin lists its models as devin/<id> and names GPT-5.6 Sol gpt-5-6-sol.
 BLOCKED_MODELS = ["gpt-6-sol", "gpt-5.6-sol", "devin/gpt-6-sol", "devin/gpt-5-6-sol"]
-# CLIProxyAPI 8.0.4 looks up OAuth exclusions per provider; there is no global list.
+# CLIProxyAPI 8.0.10 looks up OAuth exclusions per provider; there is no global list.
 OAUTH_PROVIDERS = ("aistudio", "antigravity", "claude", "codex", "devin", "gemini", "kimi", "meta", "vertex", "xai")
 # Provider API key families that support excluded-models, as v8 group names and legacy keys.
 API_KEY_FAMILIES = {"gemini": "gemini-api-key", "interactions": "interactions-api-key",
@@ -54,7 +54,7 @@ def text(value):
 def exclusions(blocked, models, name):
     """The blocked models plus each configured client ID that a request can send to one."""
     models = entries(models, name)
-    # CLIProxyAPI 8.0.4 maps each alias and name, exact and without a thinking suffix, to the first entry's model.
+    # CLIProxyAPI 8.0.10 maps each alias and name, exact and without a thinking suffix, to the first entry's model.
     targets = {}
     for model in models:
         target, alias = text(model.get("name")), text(model.get("alias"))

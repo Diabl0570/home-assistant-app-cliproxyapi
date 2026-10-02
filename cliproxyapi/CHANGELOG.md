@@ -1,3 +1,7 @@
+# 8.0.10-1
+
+- Update CLIProxyAPI to 8.0.10; upstream checksum pinned.
+
 # 8.0.4-6
 
 - Add the `blocked_models` app option, a list of exact model IDs without a credential prefix, applied at every start. By default it blocks GPT-6 Sol and GPT-5.6 Sol (`gpt-6-sol`, `gpt-5.6-sol`, and Devin's own `devin/gpt-6-sol` and `devin/gpt-5-6-sol`). Blocked models are hidden from the model list and refused for OAuth accounts and provider API keys, also under any credential prefix such as `work/gpt-6-sol`. On a provider API key, the app also hides each model alias or name that a request, with or without a thinking suffix such as `(high)`, can send to a blocked model. Other models, including `gpt-6.1-sol`, keep working.
