@@ -139,6 +139,25 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(group["excluded-models"], [*BLOCKED, "gpt-5.6-sol(8192)", "gpt-6-sol(high)"])
         self.assertEqual(group["keys"][0]["excluded-models"], [*BLOCKED, "legacy-sol"])
 
+    def test_blocked_models_follow_first_api_key_alias_mapping(self):
+        for blocked in ("gpt-6-sol", "gpt-5.6-sol"):
+            for models, hidden in (
+                ([{"name": blocked, "alias": "sol(high)"}, {"name": "gpt-6.1-sol", "alias": "sol"}],
+                 ["sol(high)", "sol"]),
+                ([{"name": "gpt-6.1-sol", "alias": "sol"}, {"name": blocked, "alias": "sol"}], []),
+                ([{"name": "gpt-6.1-sol", "alias": "sol"}, {"name": blocked, "alias": "sol(high)"}],
+                 ["sol", "sol(high)"]),
+            ):
+                with self.subTest(models=models):
+                    saved = self.write_config(startup.prepare(self.data), {
+                        "xai-api-key": [{"api-key": "legacy", "models": models}],
+                        "api-keys": {"codex": [{"models": models, "keys": [{"api-key": "own", "models": models}]}]},
+                    })
+                    group = saved["api-keys"]["codex"][0]
+                    self.assertEqual(saved["xai-api-key"][0]["excluded-models"], [*BLOCKED, *hidden])
+                    self.assertEqual(group["excluded-models"], [*BLOCKED, *hidden])
+                    self.assertEqual(group["keys"][0]["excluded-models"], [*BLOCKED, *hidden])
+
     def test_blocked_models_cover_legacy_api_key_entries(self):
         saved = self.write_config(startup.prepare(self.data), {"xai-api-key": [
             {"api-key": "k", "excluded-models": ["*"], "models": [{"name": "gpt-6-sol", "alias": "x"}]},

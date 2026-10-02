@@ -47,14 +47,32 @@ def upstream(model):
     return model.strip()
 
 
+def text(value):
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def exclusions(blocked, models, name):
-    """The blocked models plus the client ID of each configured model that targets one."""
+    """The blocked models plus each configured client ID that a request can send to one."""
+    models = entries(models, name)
+    # CLIProxyAPI 8.0.4 maps each alias and name, exact and without a thinking suffix, to the first entry's model.
+    targets = {}
+    for model in models:
+        target, alias = text(model.get("name")), text(model.get("alias"))
+        if target and alias:
+            for key in (alias, upstream(alias), target, upstream(target)):
+                targets.setdefault(key, target)
+
+    def sends(request):
+        return upstream(targets.get(request) or targets.get(upstream(request)) or request)
+
     # For an API key, CLIProxyAPI matches exclusions against a model's client ID: its alias, or else its name.
+    # A request routes by its ID without a thinking suffix, so sol(high) is served through the ID sol.
     ids = []
-    for model in entries(models, name):
-        target, alias = model.get("name"), model.get("alias")
-        if isinstance(target, str) and upstream(target) in blocked:
-            ids.append((alias if isinstance(alias, str) and alias.strip() else target).strip().lower())
+    for model in models:
+        client = text(model.get("alias")) or text(model.get("name"))
+        requests = [client, *(key for key in targets if upstream(key) == client)]
+        if client and any(sends(request) in blocked for request in requests):
+            ids.append(client)
     return list(dict.fromkeys(blocked + ids))
 
 
