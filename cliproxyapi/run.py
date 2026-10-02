@@ -39,13 +39,23 @@ def entries(value, name):
     return value
 
 
+def upstream(model):
+    """The model CLIProxyAPI sends upstream, without a thinking suffix such as (high)."""
+    model = model.strip().lower()
+    if model.endswith(")") and "(" in model:
+        model = model[:model.rindex("(")]
+    return model.strip()
+
+
 def exclusions(blocked, models, name):
-    """The blocked models plus the client name of each configured model that targets one."""
-    # For an API key, CLIProxyAPI matches exclusions against a model's alias, not its upstream name.
-    aliases = [model["alias"].strip().lower() for model in entries(models, name)
-               if isinstance(model.get("name"), str) and model["name"].strip().lower() in blocked
-               and isinstance(model.get("alias"), str) and model["alias"].strip()]
-    return list(dict.fromkeys(blocked + aliases))
+    """The blocked models plus the client ID of each configured model that targets one."""
+    # For an API key, CLIProxyAPI matches exclusions against a model's client ID: its alias, or else its name.
+    ids = []
+    for model in entries(models, name):
+        target, alias = model.get("name"), model.get("alias")
+        if isinstance(target, str) and upstream(target) in blocked:
+            ids.append((alias if isinstance(alias, str) and alias.strip() else target).strip().lower())
+    return list(dict.fromkeys(blocked + ids))
 
 
 def own(owner, excluded):

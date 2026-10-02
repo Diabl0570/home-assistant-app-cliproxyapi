@@ -129,6 +129,16 @@ class StartupTests(unittest.TestCase):
         }]}})
         self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], [*BLOCKED, "old-sol"])
 
+    def test_blocked_models_cover_thinking_suffixed_api_key_models(self):
+        saved = self.write_config(startup.prepare(self.data), {"api-keys": {"codex": [{
+            "keys": [{"api-key": "k", "models": [{"name": "gpt-6-sol(high)", "alias": "legacy-sol"}]}],
+            "models": [{"name": "GPT-5.6-Sol(8192)"}, {"name": "gpt-6-sol(high)", "alias": " "},
+                       {"name": "gpt-6.1-sol(high)", "alias": "sol"}, {"name": "gpt-6-sol-mini(high)"}],
+        }]}})
+        group = saved["api-keys"]["codex"][0]
+        self.assertEqual(group["excluded-models"], [*BLOCKED, "gpt-5.6-sol(8192)", "gpt-6-sol(high)"])
+        self.assertEqual(group["keys"][0]["excluded-models"], [*BLOCKED, "legacy-sol"])
+
     def test_blocked_models_cover_legacy_api_key_entries(self):
         saved = self.write_config(startup.prepare(self.data), {"xai-api-key": [
             {"api-key": "k", "excluded-models": ["*"], "models": [{"name": "gpt-6-sol", "alias": "x"}]},
