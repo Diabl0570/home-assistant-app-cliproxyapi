@@ -1,3 +1,7 @@
+# 8.0.10-1
+
+- Update CLIProxyAPI to 8.0.10; upstream checksum pinned.
+
 # 8.0.4-2
 
 - Publish the Home Assistant repository and installation instructions.
