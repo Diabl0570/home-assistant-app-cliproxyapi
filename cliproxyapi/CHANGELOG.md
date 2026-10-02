@@ -1,3 +1,8 @@
+# 8.0.4-4
+
+- Add routing app options, applied at every start: session affinity on with a 1-hour idle binding, round-robin (or fill-first) spread of new conversations, and retrying a failed request on your other accounts. CLIProxyAPI still moves a conversation to another account after a quota or other credential failure.
+- CLIProxyAPI remains at 8.0.4.
+
 # 8.0.4-3
 
 - Document session-affinity routing with a secret-free example.
