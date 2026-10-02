@@ -2,6 +2,7 @@
 
 - Bundle CPA Manager Plus 1.14.2 (Full Mode Manager Server), upstream checksum pinned, on port 18317. **Open Web UI** now opens it; the stock panel stays on port 8317.
 - CPA Manager Plus logs in with the management password and connects to the proxy automatically. Its data lives in `/data/cpa-manager-plus/`.
+- Startup rejects a management password with leading or trailing spaces, and stops if CPA Manager Plus cannot take a changed management password.
 - Turn CLIProxyAPI usage statistics on by default for CPA Manager Plus monitoring, unless switched off in a panel.
 - Daily workflow proposes CPA Manager Plus updates in a pull request.
 - CLIProxyAPI remains at 8.0.4.

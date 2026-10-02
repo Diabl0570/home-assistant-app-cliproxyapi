@@ -5,7 +5,7 @@
 | Option | Meaning |
 | --- | --- |
 | `api_keys` | Nonempty list of client API keys, used as Bearer credentials. These are separate from provider keys. |
-| `management_password` | A separate random password with at least 24 characters for the management panel/API. |
+| `management_password` | A separate random password with at least 24 characters and no leading or trailing spaces for the management panel/API. |
 | `logging` | Debug logging to the Home Assistant app log; false by default. Request/response logging is disabled. Debug logs may contain provider details. |
 | `routing_strategy` | How new conversations spread over your accounts: `round-robin` (default) or `fill-first`. See [Routing](#routing). |
 | `session_affinity` | Keep one conversation on the same account; true by default. |
@@ -81,7 +81,8 @@ API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 183
 
 ## Troubleshooting
 
-- Startup stops: supply nonempty client keys and a separate 24+ character management password, and a `session_affinity_ttl` such as `1h` or `30m`.
+- Startup stops: supply nonempty client keys and a separate 24+ character management password without leading or trailing spaces, and a `session_affinity_ttl` such as `1h` or `30m`.
+- Startup stops with "admin key could not be reset": CPA Manager Plus could not take the current `management_password`, so the app refuses to start rather than keep the previous password valid. Restart the app to retry.
 - Models list empty: configure/import at least one provider first.
 - UI unavailable: check app logs and port mapping; the stock panel also needs outbound access for its initial download.
 - CPA Manager Plus login fails: use the current `management_password` and restart the app after changing it.

@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import yaml
 
 spec = importlib.util.spec_from_file_location('manager_updater', Path(__file__).parents[2] / 'scripts/update_manager_plus.py')
 updater = importlib.util.module_from_spec(spec)
@@ -40,18 +41,21 @@ class ManagerPlusUpdateTests(unittest.TestCase):
         with patch.object(updater, 'ROOT', self.root), patch.object(updater, 'MANIFEST', self.manifest), patch.object(updater, 'fetch', fetch):
             updater.main()
 
+    def app_version(self):
+        return yaml.safe_load((self.root / 'cliproxyapi/config.yaml').read_text())['version']
+
     def assert_refused_without_changes(self):
         original = self.manifest.read_text()
         with self.assertRaises(SystemExit):
             self.run_update()
         self.assertEqual(self.manifest.read_text(), original)
-        self.assertIn('version: "8.0.4-3"', (self.root / 'cliproxyapi/config.yaml').read_text())
+        self.assertEqual(self.app_version(), '8.0.4-3')
 
     def test_update_changes_pin_and_bumps_app_suffix(self):
         self.run_update()
         manifest = json.loads(self.manifest.read_text())
         self.assertEqual((manifest['version'], manifest['asset'], manifest['sha256']), ('1.15.0', ASSET, 'a' * 64))
-        self.assertIn('version: "8.0.4-4"', (self.root / 'cliproxyapi/config.yaml').read_text())
+        self.assertEqual(self.app_version(), '8.0.4-4')
         changelog = (self.root / 'cliproxyapi/CHANGELOG.md').read_text()
         self.assertTrue(changelog.startswith('# 8.0.4-4\n\n- Update CPA Manager Plus to 1.15.0'))
 

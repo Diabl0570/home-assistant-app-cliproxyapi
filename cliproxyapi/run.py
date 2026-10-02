@@ -32,8 +32,9 @@ def prepare(data=Path("/data")):
         not isinstance(key, str) or not key.strip() for key in keys
     ):
         raise ValueError("Set at least one nonempty api_keys value in app configuration")
-    if not isinstance(password, str) or len(password.strip()) < 24:
-        raise ValueError("Set management_password to a random password of at least 24 characters")
+    if not isinstance(password, str) or len(password) < 24 or password != password.strip():
+        raise ValueError("Set management_password to a random password of at least 24 characters "
+                         "without leading or trailing spaces")
     if password in keys:
         raise ValueError("Use separate management and client API credentials")
     if not isinstance(logging, bool):
@@ -164,22 +165,28 @@ def supervise(commands):
     return 0 if requested else max(status, 1)
 
 
-if __name__ == "__main__":
-    os.umask(0o077)
+def main(data=Path("/data"), proxy="/usr/local/bin/cli-proxy-api",
+         manager="/usr/local/bin/cpa-manager-plus"):
     try:
-        config = prepare()
-        manager_environment, key_file = prepare_manager()
+        config = prepare(data)
+        manager_environment, key_file = prepare_manager(data)
     except (ValueError, OSError, yaml.YAMLError):
         print("CLIProxyAPI configuration invalid: check app options and persistent YAML. "
-              "API keys must be nonempty; use a separate management password with 24+ characters; "
-              "session_affinity_ttl must be a duration such as 1h or 30m.",
-              file=sys.stderr)
-        sys.exit(1)
-    manager = "/usr/local/bin/cpa-manager-plus"
+              "API keys must be nonempty; use a separate management password with 24+ characters "
+              "and no leading or trailing spaces; "
+              "session_affinity_ttl must be a duration such as 1h or 30m.", file=sys.stderr)
+        return 1
     if not sync_admin_key(manager, manager_environment, key_file):
-        print("CPA Manager Plus login could not be updated to the current management password.",
+        print("CPA Manager Plus admin key could not be reset to the current management password; "
+              "not starting, so the previous password cannot stay valid. Restart the app to retry.",
               file=sys.stderr)
-    sys.exit(supervise([
-        (["/usr/local/bin/cli-proxy-api", "-config", str(config)], {}),
+        return 1
+    return supervise([
+        ([proxy, "-config", str(config)], {}),
         ([manager], manager_environment),
-    ]))
+    ])
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    sys.exit(main())

@@ -1,9 +1,12 @@
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("startup", Path(__file__).parents[1] / "run.py")
 startup = importlib.util.module_from_spec(spec)
@@ -90,7 +93,9 @@ class StartupTests(unittest.TestCase):
     def test_invalid_options_do_not_overwrite_existing_config(self):
         config = startup.prepare(self.data)
         original = config.read_bytes()
-        for field, value in [("api_keys", []), ("api_keys", [""]), ("api_keys", [1]), ("management_password", "short"), ("logging", "false"),
+        for field, value in [("api_keys", []), ("api_keys", [""]), ("api_keys", [1]), ("management_password", "short"),
+                             ("management_password", " leading-space-password-12345"),
+                             ("management_password", "trailing-space-password-12345\n"), ("logging", "false"),
                              ("routing_strategy", "random"), ("routing_strategy", "weighted-round-robin"),
                              ("session_affinity", "true"), ("retry_other_accounts", 1),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
@@ -141,6 +146,25 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(startup.sync_admin_key(str(binary), environment, key_file))
         self.assertEqual(record.read_text().split(), ["reset-admin-key", "--db-path", environment["USAGE_DB_PATH"],
                                                       "--admin-key-file", str(key_file)])
+
+    def test_failed_admin_key_reset_stops_startup_before_any_launch(self):
+        record = self.data / "calls"
+        def fake(name, code):
+            binary = self.data / name
+            binary.write_text(f"#!{sys.executable}\nimport sys\nopen({str(record)!r}, 'a').write({name!r} + ' ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit({code})\n")
+            binary.chmod(0o700)
+            return str(binary)
+        (self.data / "cpa-manager-plus").mkdir()
+        (self.data / "cpa-manager-plus" / "usage.sqlite").write_text("database")
+        stderr = io.StringIO()
+        with patch.object(tempfile, "tempdir", self.directory.name), redirect_stderr(stderr):
+            status = startup.main(self.data, proxy=fake("proxy", 0), manager=fake("manager", 1))
+        self.assertEqual(status, 1)
+        self.assertIn("admin key could not be reset", stderr.getvalue())
+        self.assertNotIn(self.options["management_password"], stderr.getvalue())
+        calls = record.read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].split()[:2], ["manager", "reset-admin-key"])
 
     def test_supervisor_stops_remaining_process_when_one_exits(self):
         status = startup.supervise([([sys.executable, "-c", "import time; time.sleep(60)"], {}),
