@@ -58,7 +58,7 @@ The app writes the options into the proxy's persistent config, `/data/cliproxy.y
 
 - `routing_strategy`: `round-robin` rotates over the accounts, and `fill-first` uses the first account until it is unavailable.
 - `session_affinity_ttl`: a binding expires after this much idle time; each request in the conversation renews it. Use hours, minutes and seconds in that order, such as `1h`, `45m` or `1h30m`.
-- `retry_other_accounts`: when on, a request that fails on one account is retried on your other accounts within that same request. When off, a failed request returns the error without trying another account. Turning it off only stops retrying another account within the same request: CLIProxyAPI 8.0.4 still moves a conversation to another account after a credential failure such as a 429, so the conversation's next request can go to a different account. Retry overrides set on an individual provider or credential still take precedence.
+- `retry_other_accounts`: when on, a request that fails on one account is retried on your other accounts within that same request. When off, a failed request returns the error without trying another account. Turning it off only stops retrying another account within the same request: CLIProxyAPI 8.0.10 still moves a conversation to another account after a credential failure such as a 429, so the conversation's next request can go to a different account. Retry overrides set on an individual provider or credential still take precedence.
 - If session affinity is on and the bound account runs out of quota or fails, CLIProxyAPI moves the conversation to another account automatically.
 - Bindings are kept in memory only and are lost on restart.
 
@@ -96,7 +96,7 @@ Exclusions you set yourself in these fields, in the YAML or in the management pa
 
 A new OAuth account is covered as soon as it is added, because its provider's list already exists. A provider API key added in the management panel gets the exclusions at the next restart. Restart the app after adding one.
 
-CLIProxyAPI 8.0.4 has no exclusion setting for these paths, so the block cannot cover them:
+CLIProxyAPI 8.0.10 has no exclusion setting for these paths, so the block cannot cover them:
 
 - An `openai-compatibility` provider serves the models you list for it. Do not list a blocked model there.
 - An OAuth model alias (`oauth.model-alias`) you name after a blocked model, such as `{name: gpt-6.1-sol, alias: gpt-6-sol}`, appears in `/v1/models` under that name. It serves the model it aliases (here GPT-6.1 Sol), not the blocked one.
