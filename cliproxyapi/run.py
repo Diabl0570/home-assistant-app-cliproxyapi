@@ -12,6 +12,13 @@ MANAGER_PORT = 18317
 STRATEGIES = ("round-robin", "fill-first")
 # A subset of Go durations, which CLIProxyAPI parses: 1h, 30m, 2h30m, 90s.
 TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
+BLOCKED_MODELS = ["gpt-6-sol", "gpt-5.6-sol"]
+# CLIProxyAPI 8.0.4 looks up OAuth exclusions per provider; there is no global list.
+OAUTH_PROVIDERS = ("aistudio", "antigravity", "claude", "codex", "devin", "gemini", "kimi", "meta", "vertex", "xai")
+# Provider API key families that support excluded-models, as v8 group names and legacy keys.
+API_KEY_FAMILIES = {"gemini": "gemini-api-key", "interactions": "interactions-api-key",
+                    "vertex": "vertex-api-key", "codex": "codex-api-key", "claude": "claude-api-key",
+                    "xai": "xai-api-key", "meta": "meta-api-key"}
 
 
 def section(config, key):
@@ -21,6 +28,67 @@ def section(config, key):
     if not isinstance(value, dict):
         raise ValueError(f"Configuration section {key} must be a mapping")
     return value
+
+
+def exclude(owner, key, previous, blocked):
+    """Replace the models this app blocked last start with the current list, keeping the rest."""
+    models = owner.get(key)
+    if models is None:
+        if not blocked:
+            return
+        models = []
+    if not isinstance(models, list) or any(not isinstance(model, str) for model in models):
+        raise ValueError(f"{key} must be a list of model names")
+    managed = set(previous) | set(blocked)
+    owner[key] = [model for model in models if model.strip().lower() not in managed] + blocked
+
+
+def entries(value, name):
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(entry, dict) for entry in value):
+        raise ValueError(f"{name} must be a list of mappings")
+    return value
+
+
+def block_models(config, previous, blocked):
+    oauth = section(config, "oauth")
+    if oauth.get("excluded-models") is None and "oauth-excluded-models" in config:
+        oauth["excluded-models"] = config.pop("oauth-excluded-models")
+    if oauth.get("excluded-models") is None and blocked:
+        oauth["excluded-models"] = {}
+    if oauth.get("excluded-models") is not None:
+        providers = section(oauth, "excluded-models")
+        for provider in [*OAUTH_PROVIDERS, *(key for key in providers if key not in OAUTH_PROVIDERS)]:
+            exclude(providers, provider, previous, blocked)
+    # API key credentials ignore the OAuth list, so each provider key group gets its own copy.
+    groups = config.get("api-keys")
+    for family, legacy in API_KEY_FAMILIES.items():
+        if isinstance(groups, dict):
+            for group in entries(groups.get(family), f"api-keys.{family}"):
+                exclude(group, "excluded-models", previous, blocked)
+                # A key's own list replaces its group's list; an absent or null one inherits it.
+                for key in entries(group.get("keys"), f"api-keys.{family} keys"):
+                    if key.get("excluded-models") is not None:
+                        exclude(key, "excluded-models", previous, blocked)
+        for entry in entries(config.get(legacy), legacy):
+            exclude(entry, "excluded-models", previous, blocked)
+
+
+def write(path, value):
+    # JSON is valid YAML and cannot interpret user strings as YAML structure.
+    descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(value, output, ensure_ascii=False, indent=2, allow_nan=False)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    path.chmod(0o600)
 
 
 def prepare(data=Path("/data")):
@@ -51,6 +119,19 @@ def prepare(data=Path("/data")):
     match = TTL.fullmatch(ttl) if isinstance(ttl, str) else None
     if not match or not any(int(part or 0) for part in match.groups()):
         raise ValueError("session_affinity_ttl must be a positive duration such as 1h or 30m")
+    blocked = options.get("blocked_models", BLOCKED_MODELS)
+    if not isinstance(blocked, list) or any(not isinstance(model, str) or not model.strip() for model in blocked):
+        raise ValueError("blocked_models must be a list of nonempty model names")
+    # CLIProxyAPI compares exclusions trimmed and lowercased.
+    blocked = list(dict.fromkeys(model.strip().lower() for model in blocked))
+    # Remember what this app blocked so removing a model from the option unblocks it.
+    applied = data / "blocked-models.json"
+    try:
+        previous = json.loads(applied.read_text())
+    except (OSError, ValueError):
+        previous = []
+    if not isinstance(previous, list) or any(not isinstance(model, str) for model in previous):
+        previous = []
     config_path = data / "cliproxy.yaml"
     config = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
     if not isinstance(config, dict):
@@ -77,19 +158,9 @@ def prepare(data=Path("/data")):
     # Retrying tries the other accounts for a failed request; off limits it to one account.
     section(routing, "retry").update({"request-retry": 3 if retry else 0,
                                       "max-retry-credentials": 0 if retry else 1})
-    # JSON is valid YAML and cannot interpret user strings as YAML structure.
-    descriptor, temporary = tempfile.mkstemp(prefix=".cliproxy-", dir=data)
-    try:
-        with os.fdopen(descriptor, "w") as output:
-            json.dump(config, output, ensure_ascii=False, indent=2, allow_nan=False)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, config_path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-    config_path.chmod(0o600)
+    block_models(config, previous, blocked)
+    write(config_path, config)
+    write(applied, blocked)
     for credential in auths.rglob("*"):
         if credential.is_file():
             credential.chmod(0o600)
@@ -175,7 +246,8 @@ def main(data=Path("/data"), proxy="/usr/local/bin/cli-proxy-api",
         print("CLIProxyAPI configuration invalid: check app options and persistent YAML. "
               "API keys must be nonempty; use a separate management password with 24+ characters "
               "and no leading or trailing spaces; "
-              "session_affinity_ttl must be a duration such as 1h or 30m.", file=sys.stderr)
+              "session_affinity_ttl must be a duration such as 1h or 30m; "
+              "blocked_models must list nonempty model names.", file=sys.stderr)
         return 1
     if not sync_admin_key(manager, manager_environment, key_file):
         print("CPA Manager Plus admin key could not be reset to the current management password; "

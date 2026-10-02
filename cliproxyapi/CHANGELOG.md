@@ -1,3 +1,8 @@
+# 8.0.4-6
+
+- Add the `blocked_models` app option, applied at every start: by default `gpt-6-sol` and `gpt-5.6-sol` are hidden from the model list and refused for every OAuth account and provider API key, using CLIProxyAPI's own model exclusions. Other models, including `gpt-6.1-sol`, keep working. An empty list blocks nothing.
+- CLIProxyAPI remains at 8.0.4.
+
 # 8.0.4-5
 
 - Bundle CPA Manager Plus 1.14.2 (Full Mode Manager Server), upstream checksum pinned, on port 18317. **Open Web UI** now opens it; the stock panel stays on port 8317.

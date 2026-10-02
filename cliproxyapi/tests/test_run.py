@@ -90,6 +90,57 @@ class StartupTests(unittest.TestCase):
         routing = json.loads(startup.prepare(self.data).read_text())["routing"]
         self.assertEqual(routing["session-affinity-ttl"], "1h")
 
+    def test_blocked_models_default_covers_every_credential_type(self):
+        config = startup.prepare(self.data)
+        config.write_text("api-keys:\n  codex:\n    - name: personal\n      keys:\n        - api-key: one\n"
+                          "        - api-key: two\n          excluded-models: []\n"
+                          "codex-api-key:\n  - api-key: legacy\n")
+        saved = json.loads(startup.prepare(self.data).read_text())
+        blocked = ["gpt-6-sol", "gpt-5.6-sol"]
+        oauth = saved["oauth"]["excluded-models"]
+        self.assertEqual(oauth["codex"], blocked)
+        self.assertEqual(set(oauth), set(startup.OAUTH_PROVIDERS))
+        self.assertTrue(all(models == blocked for models in oauth.values()))
+        group = saved["api-keys"]["codex"][0]
+        self.assertEqual(group["excluded-models"], blocked)
+        self.assertNotIn("excluded-models", group["keys"][0])
+        self.assertEqual(group["keys"][1]["excluded-models"], blocked)
+        self.assertEqual(saved["codex-api-key"][0]["excluded-models"], blocked)
+        self.assertEqual(json.loads((self.data / "blocked-models.json").read_text()), blocked)
+
+    def test_blocked_models_option_replaces_the_default(self):
+        startup.prepare(self.data)
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": [" GPT-6-Sol ", "gpt-6-sol", "o3"]}))
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], ["gpt-6-sol", "o3"])
+
+    def test_empty_blocked_models_blocks_nothing(self):
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": []}))
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertNotIn("excluded-models", saved["oauth"])
+        startup.prepare(self.data)
+        (self.data / "options.json").write_text(json.dumps(self.options))
+        startup.prepare(self.data)
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": []}))
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], [])
+
+    def test_blocked_models_keep_existing_exclusions(self):
+        config = startup.prepare(self.data)
+        config.write_text("oauth-excluded-models:\n  codex: [gpt-5-codex-mini, gpt-6-sol]\n  plugin: ['x-*']\n"
+                          "api-keys:\n  claude:\n    - name: work\n      excluded-models: ['*']\n      keys:\n        - api-key: k\n")
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertNotIn("oauth-excluded-models", saved)
+        oauth = saved["oauth"]["excluded-models"]
+        self.assertEqual(oauth["codex"], ["gpt-5-codex-mini", "gpt-6-sol", "gpt-5.6-sol"])
+        self.assertEqual(oauth["plugin"], ["x-*", "gpt-6-sol", "gpt-5.6-sol"])
+        self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], ["*", "gpt-6-sol", "gpt-5.6-sol"])
+        # Unblocking removes only what the app added, including a model the user had also excluded.
+        (self.data / "options.json").write_text(json.dumps({**self.options, "blocked_models": ["gpt-5.6-sol"]}))
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertEqual(saved["oauth"]["excluded-models"]["codex"], ["gpt-5-codex-mini", "gpt-5.6-sol"])
+        self.assertEqual(saved["api-keys"]["claude"][0]["excluded-models"], ["*", "gpt-5.6-sol"])
+
     def test_invalid_options_do_not_overwrite_existing_config(self):
         config = startup.prepare(self.data)
         original = config.read_bytes()
@@ -99,7 +150,8 @@ class StartupTests(unittest.TestCase):
                              ("routing_strategy", "random"), ("routing_strategy", "weighted-round-robin"),
                              ("session_affinity", "true"), ("retry_other_accounts", 1),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
-                             ("session_affinity_ttl", "-1h"), ("session_affinity_ttl", 3600)]:
+                             ("session_affinity_ttl", "-1h"), ("session_affinity_ttl", 3600),
+                             ("blocked_models", "gpt-6-sol"), ("blocked_models", [""]), ("blocked_models", [1])]:
             with self.subTest(field=field, value=value):
                 options = dict(self.options)
                 options[field] = value
@@ -170,6 +222,16 @@ class StartupTests(unittest.TestCase):
         status = startup.supervise([([sys.executable, "-c", "import time; time.sleep(60)"], {}),
                                     ([sys.executable, "-c", "raise SystemExit(3)"], {})])
         self.assertEqual(status, 3)
+
+    def test_malformed_exclusions_do_not_overwrite_existing_config(self):
+        config = startup.prepare(self.data)
+        for text in ["oauth:\n  excluded-models: [gpt-6-sol]\n", "oauth:\n  excluded-models:\n    codex: gpt-6-sol\n",
+                     "api-keys:\n  codex: {}\n", "codex-api-key:\n  - excluded-models: [1]\n"]:
+            with self.subTest(text=text):
+                config.write_text(text)
+                with self.assertRaises(ValueError):
+                    startup.prepare(self.data)
+                self.assertEqual(config.read_text(), text)
 
 if __name__ == "__main__":
     unittest.main()
