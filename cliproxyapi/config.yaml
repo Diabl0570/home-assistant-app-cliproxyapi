@@ -1,5 +1,5 @@
 name: CLIProxyAPI
-version: "8.0.4-4"
+version: "8.0.4-5"
 image: ghcr.io/diabl0570/home-assistant-app-cliproxyapi-{arch}
 slug: cliproxyapi
 description: OpenAI-compatible CLIProxyAPI server as a Home Assistant app
@@ -9,16 +9,18 @@ arch:
 startup: services
 boot: auto
 init: false
-webui: http://[HOST]:[PORT:8317]/management.html
+webui: http://[HOST]:[PORT:18317]/management.html
 ports:
   8317/tcp: 8317
+  18317/tcp: 18317
   8085/tcp: null
   1455/tcp: null
   54545/tcp: null
   51121/tcp: null
   11451/tcp: null
 ports_description:
-  8317/tcp: API and management panel (local network)
+  8317/tcp: API and stock management panel (local network)
+  18317/tcp: CPA Manager Plus panel (local network)
   8085/tcp: Optional Gemini OAuth callback
   1455/tcp: Optional Codex OAuth callback
   54545/tcp: Optional Claude OAuth callback

@@ -29,3 +29,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run build.yaml --ref codex/cliproxyapi-upstream
+  manager-plus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/update_manager_plus.py
+      - uses: peter-evans/create-pull-request@v7
+        id: update_pr
+        with:
+          base: main
+          branch: codex/cpa-manager-plus-upstream
+          title: Update pinned CPA Manager Plus release
+          body: Updates the stable v1 CPA Manager Plus release and official checksum. Releases marked breaking, needing migration or a newer CLIProxyAPI are refused for manual review. Review upstream changes and verify the build workflow before merging.
+          commit-message: Update pinned CPA Manager Plus release
+      - name: Verify proposed update
+        if: steps.update_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run build.yaml --ref codex/cpa-manager-plus-upstream

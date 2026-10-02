@@ -1,8 +1,12 @@
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("startup", Path(__file__).parents[1] / "run.py")
 startup = importlib.util.module_from_spec(spec)
@@ -89,7 +93,9 @@ class StartupTests(unittest.TestCase):
     def test_invalid_options_do_not_overwrite_existing_config(self):
         config = startup.prepare(self.data)
         original = config.read_bytes()
-        for field, value in [("api_keys", []), ("api_keys", [""]), ("api_keys", [1]), ("management_password", "short"), ("logging", "false"),
+        for field, value in [("api_keys", []), ("api_keys", [""]), ("api_keys", [1]), ("management_password", "short"),
+                             ("management_password", " leading-space-password-12345"),
+                             ("management_password", "trailing-space-password-12345\n"), ("logging", "false"),
                              ("routing_strategy", "random"), ("routing_strategy", "weighted-round-robin"),
                              ("session_affinity", "true"), ("retry_other_accounts", 1),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
@@ -101,6 +107,69 @@ class StartupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     startup.prepare(self.data)
                 self.assertEqual(config.read_bytes(), original)
+
+    def test_usage_statistics_default_on_but_panel_choice_survives(self):
+        config = startup.prepare(self.data)
+        self.assertTrue(json.loads(config.read_text())["observability"]["usage"]["usage-statistics-enabled"])
+        config.write_text('{"observability": {"usage": {"usage-statistics-enabled": false}}}')
+        saved = json.loads(startup.prepare(self.data).read_text())
+        self.assertFalse(saved["observability"]["usage"]["usage-statistics-enabled"])
+
+    def test_manager_uses_management_password_without_exposing_it(self):
+        startup.prepare(self.data)
+        runtime = self.data / "runtime"
+        runtime.mkdir()
+        environment, key_file = startup.prepare_manager(self.data, runtime)
+        password = self.options["management_password"]
+        self.assertEqual(key_file.read_text(), password)
+        self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(runtime.stat().st_mode & 0o777, 0o700)
+        self.assertNotIn(password, json.dumps(environment))
+        self.assertEqual(environment["CPA_MANAGEMENT_KEY_FILE"], str(key_file))
+        self.assertEqual(environment["CPA_MANAGER_ADMIN_KEY_FILE"], str(key_file))
+        self.assertEqual(environment["CPA_UPSTREAM_URL"], "http://127.0.0.1:8317")
+        self.assertEqual(environment["USAGE_DB_PATH"], str(self.data / "cpa-manager-plus" / "usage.sqlite"))
+        self.assertEqual((self.data / "cpa-manager-plus").stat().st_mode & 0o777, 0o700)
+
+    def test_admin_key_sync_skips_first_start_and_resets_existing_database(self):
+        startup.prepare(self.data)
+        runtime = self.data / "runtime"
+        runtime.mkdir()
+        environment, key_file = startup.prepare_manager(self.data, runtime)
+        record = self.data / "calls"
+        binary = self.data / "fake-manager"
+        binary.write_text(f"#!{sys.executable}\nimport sys\nopen({str(record)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n")
+        binary.chmod(0o700)
+        self.assertTrue(startup.sync_admin_key(str(binary), environment, key_file))
+        self.assertFalse(record.exists())
+        Path(environment["USAGE_DB_PATH"]).write_text("database")
+        self.assertTrue(startup.sync_admin_key(str(binary), environment, key_file))
+        self.assertEqual(record.read_text().split(), ["reset-admin-key", "--db-path", environment["USAGE_DB_PATH"],
+                                                      "--admin-key-file", str(key_file)])
+
+    def test_failed_admin_key_reset_stops_startup_before_any_launch(self):
+        record = self.data / "calls"
+        def fake(name, code):
+            binary = self.data / name
+            binary.write_text(f"#!{sys.executable}\nimport sys\nopen({str(record)!r}, 'a').write({name!r} + ' ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit({code})\n")
+            binary.chmod(0o700)
+            return str(binary)
+        (self.data / "cpa-manager-plus").mkdir()
+        (self.data / "cpa-manager-plus" / "usage.sqlite").write_text("database")
+        stderr = io.StringIO()
+        with patch.object(tempfile, "tempdir", self.directory.name), redirect_stderr(stderr):
+            status = startup.main(self.data, proxy=fake("proxy", 0), manager=fake("manager", 1))
+        self.assertEqual(status, 1)
+        self.assertIn("admin key could not be reset", stderr.getvalue())
+        self.assertNotIn(self.options["management_password"], stderr.getvalue())
+        calls = record.read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].split()[:2], ["manager", "reset-admin-key"])
+
+    def test_supervisor_stops_remaining_process_when_one_exits(self):
+        status = startup.supervise([([sys.executable, "-c", "import time; time.sleep(60)"], {}),
+                                    ([sys.executable, "-c", "raise SystemExit(3)"], {})])
+        self.assertEqual(status, 3)
 
 if __name__ == "__main__":
     unittest.main()

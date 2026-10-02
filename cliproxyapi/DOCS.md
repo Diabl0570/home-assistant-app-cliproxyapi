@@ -5,7 +5,7 @@
 | Option | Meaning |
 | --- | --- |
 | `api_keys` | Nonempty list of client API keys, used as Bearer credentials. These are separate from provider keys. |
-| `management_password` | A separate random password with at least 24 characters for the management panel/API. |
+| `management_password` | A separate random password with at least 24 characters and no leading or trailing spaces for the management panel/API. |
 | `logging` | Debug logging to the Home Assistant app log; false by default. Request/response logging is disabled. Debug logs may contain provider details. |
 | `routing_strategy` | How new conversations spread over your accounts: `round-robin` (default) or `fill-first`. See [Routing](#routing). |
 | `session_affinity` | Keep one conversation on the same account; true by default. |
@@ -14,9 +14,21 @@
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
+## CPA Manager Plus
+
+The app bundles [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus) (Full Mode Manager Server), an extended management panel with persistent request history, usage and cost analytics, quota and account health. It runs next to the proxy in the same app and is connected to it automatically.
+
+1. In Home Assistant open **Settings → Apps → CLIProxyAPI** and select **Open Web UI**. This opens `http://HOME_ASSISTANT_IP:18317/management.html`.
+2. Log in with your `management_password`. It is also the CPA Manager Plus admin key; changing the option changes both on the next start.
+3. The CPA connection is preconfigured: the manager reaches the proxy internally at `http://127.0.0.1:8317` with the same password. Do not change the CPA address or key in its settings; the app sets them on every start.
+
+Request history, settings and the encryption key `data.key` live in `/data/cpa-manager-plus/` and are part of Home Assistant app backups. Monitoring needs CLIProxyAPI usage statistics; the app turns `usage-statistics-enabled` on unless you have switched it off in a panel. CPA Manager Plus's own update check is disabled because the app pins it; see [Updating CPA Manager Plus](#updating-cpa-manager-plus).
+
+The stock CLIProxyAPI panel is unchanged and still available at `http://HOME_ASSISTANT_IP:8317/management.html`. Both panels manage the same proxy configuration.
+
 ## Provider setup
 
-Open `http://HOME_ASSISTANT_IP:8317/management.html` (or **Web UI**) and connect using the management password. The panel downloads on first access, so outbound GitHub access is needed. Periodic panel updates are disabled for predictability. The upstream panel is independent of the pinned server release; the initial panel download is not checksum-pinned.
+Open CPA Manager Plus (**Web UI**) or the stock panel at `http://HOME_ASSISTANT_IP:8317/management.html` and connect using the management password. The stock panel downloads on first access, so outbound GitHub access is needed. Periodic stock panel updates are disabled for predictability. The upstream stock panel is independent of the pinned server release; its initial download is not checksum-pinned. CPA Manager Plus is part of the app image and needs no download.
 
 Add a provider API key in the management panel, or import a supported CLIProxyAPI OAuth auth JSON via its auth-file upload. Auth import avoids callback networking and is the easiest fallback. See [upstream documentation](https://github.com/router-for-me/CLIProxyAPI) for supported providers and account login requirements.
 
@@ -24,9 +36,9 @@ OAuth login may redirect your browser to `localhost`, meaning the computer with 
 
 ## Persistence and ownership
 
-The app's private `/data` holds `cliproxy.yaml` and `auths/`. Provider keys, provider settings and OAuth auth files survive restarts and app updates. They are included in Home Assistant app backups; protect your backups. Existing YAML written by the management panel is read safely on startup, merged, and serialized as JSON (valid YAML).
+The app's private `/data` holds `cliproxy.yaml`, `auths/` and `cpa-manager-plus/`. Provider keys, provider settings and OAuth auth files survive restarts and app updates. They are included in Home Assistant app backups; protect your backups. Existing YAML written by the management panel is read safely on startup, merged, and serialized as JSON (valid YAML).
 
-App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging, and the routing fields listed under [Routing](#routing). Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
+App options control these fields on every startup: config version, server host/port/TLS enable, client access keys, management remote access/password/panel settings, OAuth auth directory, debug/stdout/request logging, the routing fields listed under [Routing](#routing), and the CPA Manager Plus admin key and proxy connection. Changes to those fields through the management panel are overwritten on restart. Other settings, including provider configuration, are retained. The config file has mode 0600, auth directory 0700, existing auth files 0600, and the server inherits a private umask.
 
 ## Routing
 
@@ -65,12 +77,25 @@ PATCH keeps routing fields you leave out; PUT replaces the whole routing section
 
 ## Network
 
-API and management share TCP 8317; default mapping is LAN-accessible HTTP. Use only on a trusted local network. Do not forward this port from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
+API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317. Both default mappings are LAN-accessible HTTP; the API requires a client key and both panels require the management password. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
 
 ## Troubleshooting
 
-- Startup stops: supply nonempty client keys and a separate 24+ character management password, and a `session_affinity_ttl` such as `1h` or `30m`.
+- Startup stops: supply nonempty client keys and a separate 24+ character management password without leading or trailing spaces, and a `session_affinity_ttl` such as `1h` or `30m`.
+- Startup stops with "admin key could not be reset": CPA Manager Plus could not take the current `management_password`, so the app refuses to start rather than keep the previous password valid. Restart the app to retry.
 - Models list empty: configure/import at least one provider first.
-- UI unavailable: check app logs, port mapping and outbound access for the initial panel download.
+- UI unavailable: check app logs and port mapping; the stock panel also needs outbound access for its initial download.
+- CPA Manager Plus login fails: use the current `management_password` and restart the app after changing it.
+- CPA Manager Plus Monitoring is empty: send a new request through the proxy and check that usage statistics are enabled in the panel.
 - Image pull denied: maintainer must publish the corresponding image version and make its GHCR package public.
 - On-device acceptance: verify startup, Web UI, provider login, authenticated request, backup and restart on your HAOS system before relying on it.
+
+## Updating CPA Manager Plus
+
+CPA Manager Plus is pinned to an exact upstream release and its official SHA-256 in `cliproxyapi/manager-plus.json`, like the CLIProxyAPI binary in `cliproxyapi/updater.json`. You do not update it from inside the panel.
+
+- Automatic: the daily **Check upstream updates** workflow runs `scripts/update_manager_plus.py`. When a newer stable v1 release appears, it opens a pull request that changes the pin, the checksum, the app version suffix (for example `8.0.4-5` → `8.0.4-6`) and the changelog, then starts the build for that branch. Merging it publishes a new app version; Home Assistant then offers **Update**.
+- Manual: run the workflow with **Run workflow** in GitHub Actions, or run `python3 scripts/update_manager_plus.py` locally and open a pull request with the result.
+- Refused for manual review: prereleases, a new major version, and releases whose upstream `release-info.json` marks them breaking, needing migration, or needing a newer CLIProxyAPI than the pinned one. To take such a release, review its upgrade notes, then edit `version`, `asset` and `sha256` in `cliproxyapi/manager-plus.json` from the release's `checksums.txt`, and bump the app version and changelog.
+
+Back up the app before updating; the manager database migrates forward on start.
