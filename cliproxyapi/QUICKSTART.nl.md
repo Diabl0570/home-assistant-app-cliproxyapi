@@ -14,4 +14,4 @@ Providerinstellingen en OAuth-inloggegevens blijven behouden bij herstarten en b
 
 Een OAuth-login kan naar localhost op je computer verwijzen. Plak waar de beheerpagina dat ondersteunt de volledige uiteindelijke callback-URL terug, of importeer een authbestand. Alleen een extra callbackpoort openen lost een localhost-redirect niet op.
 
-Updates verschijnen via de normale **Bijwerken**-knop zodra een geteste nieuwe appversie is gepubliceerd. Zet poorten 8317 en 18317 niet open op internet. Meer uitleg: [Engelse documentatie](DOCS.md).
+Updates verschijnen via de normale **Bijwerken**-knop zodra een geteste nieuwe appversie is gepubliceerd. Zet poorten 8317, 18317 en 18318 (optionele diagnostiek) niet open op internet. Meer uitleg: [Engelse documentatie](DOCS.md).

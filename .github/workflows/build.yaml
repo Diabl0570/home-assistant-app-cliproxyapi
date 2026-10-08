@@ -54,3 +54,14 @@ jobs:
             git merge-base --is-ancestor origin/stable HEAD
           fi
           git push origin HEAD:refs/heads/stable
+  # Separate from amd64 so an incompatible upstream fails only this check: publishing never waits on it,
+  # and at runtime diagnostics reports itself unavailable without touching the proxy.
+  diagnostics-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: docker build --build-arg BUILD_ARCH=amd64 -t ha-cliproxy-test cliproxyapi
+      - run: python scripts/diagnostics_compat.py
