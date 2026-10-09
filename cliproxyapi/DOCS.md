@@ -43,7 +43,7 @@ curl -H 'Authorization: Bearer <diagnostics-key>' 'http://HOME_ASSISTANT_IP:1831
 | `time` | When the request was recorded, in UTC. |
 | `model` | The model the request named. |
 | `provider` | The provider of the account that served it, such as `codex`. |
-| `account` | The account's configured label, or `acct-` and a short stable hash when the label is missing or looks like an email or key. |
+| `account` | The account's configured label, or `acct-` and a short stable hash when the label is missing, looks like an email or key, or is the label CLIProxyAPI gives every API key of a provider, such as `codex-apikey`. |
 | `status` | The upstream HTTP status. |
 | `error` | The class of `status`: `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (no status). |
 | `message` | A fixed description of `error`, such as `Provider overloaded`. It is never the provider's own error message, which can quote the prompt. |

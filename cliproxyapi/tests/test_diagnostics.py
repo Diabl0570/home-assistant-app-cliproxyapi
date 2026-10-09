@@ -218,6 +218,25 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIsNone(diagnostics.account({"auth_label_snapshot": "person@example.com"}))
         self.assertEqual(diagnostics.account(row(auth_label_snapshot="Team (backup)")), "Team (backup)")
 
+    def test_api_keys_sharing_a_generated_label_get_their_own_stable_hash(self):
+        self.manager.reply = (200, page(row(auth_label_snapshot="codex-apikey", auth_index="idx-one"),
+                                        row(auth_label_snapshot="codex-apikey", auth_index="idx-two")))
+        expected = ["acct-" + hashlib.sha256(index).hexdigest()[:10] for index in (b"idx-one", b"idx-two")]
+        for _ in range(2):
+            status, body, _ = self.get()
+            self.assertEqual((status, [failure["account"] for failure in body["failures"]]), (200, expected))
+        hashed = "acct-" + hashlib.sha256(b"a1b2c3").hexdigest()[:10]
+        for label in ["gemini-apikey", "interactions-apikey", "claude-apikey", "codex-apikey", "xai-apikey",
+                      "meta-apikey", "vertex-apikey", " codex-apikey "]:
+            with self.subTest(label=label):
+                self.assertEqual(diagnostics.account(row(auth_label_snapshot=label)), hashed)
+        self.assertEqual(diagnostics.account(row(auth_label_snapshot="codex-apikey", auth_index=None)),
+                         "acct-" + hashlib.sha256(b"s" * 16).hexdigest()[:10])
+        self.assertIsNone(diagnostics.account({"auth_label_snapshot": "codex-apikey"}))
+        for label in ["Codex work", "codex", "codex-apikey-2", "openrouter"]:
+            with self.subTest(label=label):
+                self.assertEqual(diagnostics.account(row(auth_label_snapshot=label)), label)
+
     def test_error_classes_come_from_the_status(self):
         for status, expected in [(429, "rate_limited"), (529, "overloaded"), (500, "server_error"),
                                  (503, "unavailable"), (None, "interrupted"), (0, "interrupted"),

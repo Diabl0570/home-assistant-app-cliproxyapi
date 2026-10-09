@@ -33,6 +33,9 @@ LABEL = re.compile(r"[\w .()+-]{1,40}")
 TOKEN = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 # Account labels can be emails or keys; these shapes fall back to a hash instead.
 SECRETISH = re.compile(r"[A-Za-z0-9_-]{20,}|\d{6,}")
+# CLIProxyAPI 8.0.10 gives every API key of a provider the same label, so these name no account and also hash.
+GENERATED = frozenset(provider + "-apikey" for provider in
+                      ("gemini", "interactions", "claude", "codex", "xai", "meta", "vertex"))
 # The fields diagnostics reads from a CPA Manager Plus 1.14.2 event that may be absent but not null.
 STRINGS = ("request_id", "auth_label_snapshot", "auth_index", "source_hash", "auth_provider_snapshot")
 # The provider's own error message can quote the prompt, so each class has a fixed description instead.
@@ -74,7 +77,7 @@ def count(value):
 def account(row):
     """The configured account label, or a stable short hash; never an email or key."""
     label = text(row.get("auth_label_snapshot"), LABEL)
-    if label and not SECRETISH.search(label):
+    if label and label not in GENERATED and not SECRETISH.search(label):
         return label
     for field in ("auth_index", "source_hash"):
         value = row.get(field)
