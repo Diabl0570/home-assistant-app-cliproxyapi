@@ -41,9 +41,10 @@ python3 -m pip install PyYAML==6.0.2
 python3 -m unittest discover -s cliproxyapi/tests -v
 docker build --build-arg BUILD_ARCH=amd64 -t ha-cliproxy-test cliproxyapi
 python3 scripts/smoke.py
+python3 scripts/retry_check.py
 python3 scripts/diagnostics_compat.py
 ```
 
-The smoke test uses no provider accounts. Actual Home Assistant installation and provider login still require testing on a Home Assistant device.
+The smoke test and the retry and diagnostics checks use no provider accounts. Actual Home Assistant installation and provider login still require testing on a Home Assistant device.
 
 MIT license applies to this wrapper. The container includes the CLIProxyAPI and CPA Manager Plus (MIT) release LICENSE files; upstream projects and the separately downloaded stock management panel retain their own licensing.

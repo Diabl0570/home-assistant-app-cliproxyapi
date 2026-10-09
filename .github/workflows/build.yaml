@@ -28,6 +28,7 @@ jobs:
           VERSION=$(python -c 'import yaml; print(yaml.safe_load(open("cliproxyapi/config.yaml"))["version"])')
           docker build --build-arg BUILD_ARCH=amd64 --build-arg BUILD_VERSION="$VERSION" --build-arg BUILD_REF="$GITHUB_SHA" -t ha-cliproxy-test cliproxyapi
       - run: python scripts/smoke.py
+      - run: python scripts/retry_check.py
       - name: Publish verified image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
