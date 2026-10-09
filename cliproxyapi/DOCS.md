@@ -12,6 +12,7 @@
 | `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
 | `retry_other_accounts` | Retry a failed request on your other accounts; true by default. Off only stops that retry within the same request; see [Routing](#routing). |
 | `blocked_models` | Exact model IDs, without a credential prefix, that the proxy neither lists nor serves; `gpt-6-sol` and `gpt-5.6-sol` by default, plus Devin's `devin/gpt-6-sol` and `devin/gpt-5-6-sol`. An empty list blocks nothing. See [Blocked models](#blocked-models) for the limits. |
+| `diagnostics_keys` | Optional keys for the read-only [diagnostics](#diagnostics) endpoint on port 18318; empty (off) by default. Each needs at least 24 characters without leading or trailing spaces and must differ from `api_keys` and `management_password`, also when those have surrounding spaces. |
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
@@ -26,6 +27,36 @@ The app bundles [CPA Manager Plus](https://github.com/seakee/CPA-Manager-Plus) (
 Request history, settings and the encryption key `data.key` live in `/data/cpa-manager-plus/` and are part of Home Assistant app backups. Monitoring needs CLIProxyAPI usage statistics; the app turns `usage-statistics-enabled` on unless you have switched it off in a panel. CPA Manager Plus's own update check is disabled because the app pins it; see [Updating CPA Manager Plus](#updating-cpa-manager-plus).
 
 The stock CLIProxyAPI panel is unchanged and still available at `http://HOME_ASSISTANT_IP:8317/management.html`. Both panels manage the same proxy configuration.
+
+## Diagnostics
+
+An optional, read-only endpoint lists recent failed or interrupted requests, so you can match a client's model-connection error or a provider overload to what the proxy saw. It is off until you set at least one `diagnostics_keys` value; give each tool its own random key, for example from `openssl rand -hex 32`, then restart the app.
+
+```sh
+curl -H 'Authorization: Bearer <diagnostics-key>' 'http://HOME_ASSISTANT_IP:18318/diagnostics/failures?hours=24&limit=50'
+```
+
+`GET /diagnostics/failures` is the only request it answers. `hours` (1–168, default 24) sets how far back to look and `limit` (1–200, default 50) caps how many failures, newest first, are returned; `truncated` is true when there were more. Each failure has only these fields; a field is `null` when it is unknown:
+
+| Field | Meaning |
+| --- | --- |
+| `time` | When the request was recorded, in UTC. |
+| `model` | The model the request named. |
+| `provider` | The provider of the account that served it, such as `codex`. |
+| `account` | The account's configured label, or `acct-` and a short stable hash when the label is missing, looks like an email or key, or is the label CLIProxyAPI gives every API key of a provider, such as `codex-apikey`. |
+| `status` | The upstream HTTP status. |
+| `error` | The class of `status`: `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (`status` is `null`, 0 or 499). |
+| `message` | A fixed description of `error`, such as `Provider overloaded`. It is never the provider's own error message, which can quote the prompt. |
+| `streamed` | Whether the client asked for a streamed response. |
+| `output_tokens` | Output tokens counted before the failure. |
+| `duration_ms` | How long the request took. |
+| `request_id` | The proxy's request ID. |
+
+It never returns prompts, responses, provider error messages, headers, client or provider keys, OAuth or auth-file contents, emails, client addresses or configuration, and it cannot change anything. A diagnostics key is not accepted by the API or either management panel, and the client keys and management password are not accepted by diagnostics.
+
+Diagnostics is a small separate process in the app. It reads the failed requests from CPA Manager Plus's request history, the query behind its Monitoring page, using the management password internally, and passes on only the fields above. It needs the history CPA Manager Plus keeps, so failures before the history started, or while usage statistics are switched off, are not listed. Diagnostics does not log requests.
+
+When CPA Manager Plus is not reachable, or its answer no longer matches what diagnostics asked for and expects (the fields and types it reads, only failures, only the requested hours and at most `limit` of them), the endpoint answers `503` with `{"status": "unavailable", "reason": ...}` instead of guessing; the reason is `manager_unreachable`, `manager_unauthorized`, `manager_error`, `interface_incompatible` or `busy`. The proxy and CPA Manager Plus keep running whether diagnostics works, fails to start or stops, and invalid `diagnostics_keys` only turn diagnostics off, with a note in the app log.
 
 ## Provider setup
 
@@ -105,7 +136,7 @@ CLIProxyAPI 8.0.10 has no exclusion setting for these paths, so the block cannot
 
 ## Network
 
-API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317. Both default mappings are LAN-accessible HTTP; the API requires a client key and both panels require the management password. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
+API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 18317; diagnostics uses TCP 18318 and listens only when `diagnostics_keys` is set. All default mappings are LAN-accessible HTTP, reachable wherever your Home Assistant host is, such as over a VPN you already route to it; the API requires a client key, both panels require the management password and diagnostics requires a diagnostics key. Use only on a trusted local network. Do not forward these ports from your router. An HTTPS reverse proxy is needed for access outside a trusted network. This app has no Home Assistant ingress or Supervisor API permissions. A running proxy does not automatically integrate it into Home Assistant's Assist: your chosen client/integration must support a custom OpenAI-compatible base URL.
 
 ## Troubleshooting
 
@@ -115,6 +146,7 @@ API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 183
 - UI unavailable: check app logs and port mapping; the stock panel also needs outbound access for its initial download.
 - CPA Manager Plus login fails: use the current `management_password` and restart the app after changing it.
 - CPA Manager Plus Monitoring is empty: send a new request through the proxy and check that usage statistics are enabled in the panel.
+- Diagnostics refuses connections: set `diagnostics_keys` and restart; the app log says when invalid keys turned it off. `401` means the key is not one of `diagnostics_keys`. `503` with `interface_incompatible` means the pinned CPA Manager Plus no longer offers the query diagnostics uses or answers it differently; the proxy is unaffected, and diagnostics stays unavailable until an app update adapts it.
 - Image pull denied: maintainer must publish the corresponding image version and make its GHCR package public.
 - On-device acceptance: verify startup, Web UI, provider login, authenticated request, backup and restart on your HAOS system before relying on it.
 
@@ -127,3 +159,11 @@ CPA Manager Plus is pinned to an exact upstream release and its official SHA-256
 - Refused for manual review: prereleases, a new major version, and releases whose upstream `release-info.json` marks them breaking, needing migration, or needing a newer CLIProxyAPI than the pinned one. To take such a release, review its upgrade notes, then edit `version`, `asset` and `sha256` in `cliproxyapi/manager-plus.json` from the release's `checksums.txt`, and bump the app version and changelog.
 
 Back up the app before updating; the manager database migrates forward on start.
+
+## Updates and diagnostics compatibility
+
+Upstream updates stay plain version and checksum bumps of the official CLIProxyAPI and CPA Manager Plus releases. The app never patches or rebuilds either upstream; diagnostics is a separate process that only reads CPA Manager Plus's existing request-history query, so the update workflow needs no changes for it.
+
+Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, using only synthetic credentials and no real provider accounts. It then checks that diagnostics accepts the real CPA Manager Plus answer and lists the failure with only the allowed fields, the fixed message and no secrets or provider error text; that it answers `interface_incompatible` when the query is missing; and that stopping diagnostics leaves the proxy running.
+
+If an upstream release changes that query or the fields and types it returns, only this check fails: the image build, smoke test and publishing do not depend on it. You can merge the update anyway, and diagnostics then answers `unavailable` while the proxy works normally, or adapt diagnostics in the same pull request first.

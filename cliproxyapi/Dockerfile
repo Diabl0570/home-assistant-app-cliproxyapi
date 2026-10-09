@@ -27,5 +27,5 @@ RUN test "$BUILD_ARCH" = amd64 \
     && rm -rf /tmp/release /tmp/cliproxy.tar.gz /tmp/manager /tmp/manager.tar.gz /var/lib/apt/lists/*
 LABEL org.opencontainers.image.revision="${BUILD_REF}" io.hass.arch="${BUILD_ARCH}" io.hass.version="${BUILD_VERSION}" org.opencontainers.image.source="https://github.com/Diabl0570/home-assistant-app-cliproxyapi" io.hass.type="app" io.hass.name="CLIProxyAPI" io.hass.description="CLIProxyAPI for Home Assistant"
 WORKDIR /data
-COPY run.py /usr/local/bin/run.py
+COPY run.py diagnostics.py /usr/local/bin/
 ENTRYPOINT ["python3", "/usr/local/bin/run.py"]

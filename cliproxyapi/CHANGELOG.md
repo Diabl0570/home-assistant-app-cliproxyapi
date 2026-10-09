@@ -1,3 +1,10 @@
+# 8.0.10-2
+
+- Add an optional, read-only diagnostics endpoint on port 18318 that lists recent failed requests: time, model, provider, account label or short hash, upstream status, error class, a fixed description of that class, streaming, output tokens, duration and request ID. It never returns prompts, responses, provider error messages, headers, keys or emails. It is off until you set the new `diagnostics_keys` option, separate keys that the API and panels do not accept, even with surrounding spaces.
+- Diagnostics reads CPA Manager Plus's request history and answers `503 unavailable` when that interface is missing or changed, including changed fields, types or filtering. The proxy and CPA Manager Plus keep running when diagnostics fails or stops.
+- A separate CI check runs diagnostics against the pinned CLIProxyAPI and CPA Manager Plus releases on every build, including update pull requests. Upstream updates stay plain version and checksum bumps.
+- CLIProxyAPI remains at 8.0.10.
+
 # 8.0.10-1
 
 - Update CLIProxyAPI to 8.0.10; upstream checksum pinned.

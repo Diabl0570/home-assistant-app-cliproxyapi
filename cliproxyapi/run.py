@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -221,6 +222,28 @@ def prepare_manager(data=Path("/data"), runtime=None):
     return environment, key_file
 
 
+def prepare_diagnostics(data, key_file):
+    """Return the diagnostics environment, or None and why it is off; it never stops the proxy."""
+    options = json.loads((data / "options.json").read_text())
+    keys = options.get("diagnostics_keys") or []
+    if not isinstance(keys, list) or any(
+        not isinstance(key, str) or len(key) < 24 or key != key.strip() for key in keys
+    ):
+        return None, ("diagnostics_keys must each be a random key of at least 24 characters "
+                      "without leading or trailing spaces")
+    # CLIProxyAPI trims client keys and CPA Manager Plus its key file; Python strips at least the same spaces.
+    taken = {options["management_password"].strip(), *(key.strip() for key in options["api_keys"])}
+    if any(key in taken for key in keys):
+        return None, "diagnostics_keys must differ from api_keys and management_password"
+    if not keys:
+        return None, None
+    # Only digests reach the sidecar; it reads the manager with the management password file.
+    keys_file = key_file.parent / "diagnostics-keys"
+    keys_file.write_text(json.dumps(sorted({hashlib.sha256(key.encode()).hexdigest() for key in keys})))
+    keys_file.chmod(0o600)
+    return {"DIAGNOSTICS_KEYS_FILE": str(keys_file), "DIAGNOSTICS_ADMIN_KEY_FILE": str(key_file)}, None
+
+
 def sync_admin_key(binary, environment, key_file):
     """Keep the stored manager login equal to the current management password."""
     database = Path(environment["USAGE_DB_PATH"])
@@ -232,8 +255,11 @@ def sync_admin_key(binary, environment, key_file):
     return result.returncode == 0
 
 
-def supervise(commands):
-    """Run all commands; stop the rest when one exits or the app is stopped."""
+def supervise(commands, optional=()):
+    """Run all commands; stop the rest when one exits or the app is stopped.
+
+    An optional command, such as diagnostics, may fail to start or exit without stopping the others.
+    """
     children = []
     stopping = []
 
@@ -247,13 +273,24 @@ def supervise(commands):
     signal.signal(signal.SIGINT, stop)
     for command, environment in commands:
         children.append(subprocess.Popen(command, env={**os.environ, **environment}))
+    required = list(children)
+    for command, environment in optional:
+        try:
+            children.append(subprocess.Popen(command, env={**os.environ, **environment}))
+        except OSError:
+            print("Diagnostics could not start; the proxy keeps running.", file=sys.stderr)
     if stopping:
         stop()
-    pid, wait_status = os.wait()
-    status = os.waitstatus_to_exitcode(wait_status)
-    for child in children:
-        if child.pid == pid:
+    while True:
+        pid, wait_status = os.wait()
+        status = os.waitstatus_to_exitcode(wait_status)
+        child = next((child for child in children if child.pid == pid), None)
+        if child is not None:
             child.returncode = status
+        if stopping or child in required:
+            break
+        if child is not None:
+            print("Diagnostics stopped; the proxy keeps running.", file=sys.stderr)
     requested = bool(stopping)
     stop()
     for child in children:
@@ -267,7 +304,7 @@ def supervise(commands):
 
 
 def main(data=Path("/data"), proxy="/usr/local/bin/cli-proxy-api",
-         manager="/usr/local/bin/cpa-manager-plus"):
+         manager="/usr/local/bin/cpa-manager-plus", diagnostics="/usr/local/bin/diagnostics.py"):
     try:
         config = prepare(data)
         manager_environment, key_file = prepare_manager(data)
@@ -283,10 +320,16 @@ def main(data=Path("/data"), proxy="/usr/local/bin/cli-proxy-api",
               "not starting, so the previous password cannot stay valid. Restart the app to retry.",
               file=sys.stderr)
         return 1
+    try:
+        diagnostics_environment, problem = prepare_diagnostics(data, key_file)
+    except OSError:
+        diagnostics_environment, problem = None, "its key file could not be written"
+    if problem:
+        print(f"Diagnostics is off: {problem}. The proxy starts normally.", file=sys.stderr)
     return supervise([
         ([proxy, "-config", str(config)], {}),
         ([manager], manager_environment),
-    ])
+    ], [([sys.executable, diagnostics], diagnostics_environment)] if diagnostics_environment else [])
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ The public repository and container image are published under `Diabl0570`. Use t
 
 A daily workflow proposes stable CLIProxyAPI v8 and CPA Manager Plus v1 updates in separate pull requests. Release asset, checksum, app version and changelog change together. The updater explicitly dispatches the build workflow for its PR branch, because GitHub suppresses ordinary PR triggers created with `GITHUB_TOKEN`. Review the successful build before merging. New major upstream versions, and CPA Manager Plus releases marked breaking or needing migration or a newer CLIProxyAPI, require a manual compatibility review. A successful main build publishes the versioned amd64 image to GHCR. Only after an anonymous image-pull check passes does the workflow advance the `stable` installation branch. Home Assistant detects the changed app version and offers **Update** after refreshing the store; users do not have to rebuild upstream themselves.
 
+For the optional read-only endpoint, see [Diagnostics](cliproxyapi/DOCS.md#diagnostics) for enablement and [Updates and diagnostics compatibility](cliproxyapi/DOCS.md#updates-and-diagnostics-compatibility) for the upstream-update and compatibility-check contract.
+
 Inspired by the app structure and update approach of [alexbelgium/hassio-addons](https://github.com/alexbelgium/hassio-addons). Implementation is a small standalone wrapper, without copying its scripts.
 
 ## Maintainer setup
@@ -39,6 +41,7 @@ python3 -m pip install PyYAML==6.0.2
 python3 -m unittest discover -s cliproxyapi/tests -v
 docker build --build-arg BUILD_ARCH=amd64 -t ha-cliproxy-test cliproxyapi
 python3 scripts/smoke.py
+python3 scripts/diagnostics_compat.py
 ```
 
 The smoke test uses no provider accounts. Actual Home Assistant installation and provider login still require testing on a Home Assistant device.
