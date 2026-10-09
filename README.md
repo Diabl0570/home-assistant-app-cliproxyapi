@@ -2,7 +2,7 @@
 
 Run [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) on your Home Assistant OS device. Community app for **amd64**, including bare-metal x86-64 systems; not an official Home Assistant or CLIProxyAPI project.
 
-The public repository and container image are published under `Diabl0570`. Use the `stable` branch below to install releases that passed the container build and smoke test.
+The public repository and container image are published under `Diabl0570`. Use the `stable` branch below to install releases that passed the container build, smoke test and [retry check](cliproxyapi/DOCS.md#retries-before-output).
 
 ## Install
 

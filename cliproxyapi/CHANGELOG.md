@@ -1,8 +1,8 @@
 # 8.0.10-3
 
-- Add the `retry_before_output` app option, on by default. A request that fails before any output reaches the client is retried up to 3 times, after a fixed wait: 5 seconds after a timeout (408) or 5xx error, at least 10 seconds or the provider's `Retry-After` after a 429. A dropped connection is retried at once, as before. A wait never exceeds 30 seconds; when a longer one would be needed, the error is returned at once. A streamed request is never retried once its output has started.
-- The app now owns `routing.retry.max-retry-interval` (30) and `routing.cooldown.transient-error-cooldown-seconds` (5) and rewrites them at every start; values set in a panel are replaced. After a timeout or 5xx error an account is skipped for 5 seconds instead of 60. With the option off, or with `retry_other_accounts` off, both fields get CLIProxyAPI's defaults (no waiting, 60 seconds).
-- Every build runs a retry check against a fake provider with synthetic credentials.
+- Add the `retry_before_output` app option using CLIProxyAPI's native retry settings. See [Retries before output](DOCS.md#retries-before-output) for defaults, fixed class waits, limits and off-switch behaviour.
+- The app now owns two additional routing fields; see [Routing](DOCS.md#routing) before changing retry settings in a panel.
+- Add a build-gating [retry check](DOCS.md#retries-before-output).
 - CLIProxyAPI remains at 8.0.10.
 
 # 8.0.10-2
