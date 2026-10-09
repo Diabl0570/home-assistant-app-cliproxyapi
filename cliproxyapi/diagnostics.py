@@ -26,30 +26,29 @@ ANALYTICS = "/v0/management/monitoring/analytics"
 TIMEOUT = 10
 DEFAULT_HOURS, MAX_HOURS = 24, 168
 DEFAULT_LIMIT, MAX_LIMIT = 50, 200
-MESSAGE_LENGTH = 160
-MAX_TIMESTAMP_MS = 253_402_300_800_000  # 10000-01-01, beyond which datetime fails
 
 MODEL = re.compile(r"[\w.:/()+-]{1,96}")
 PROVIDER = re.compile(r"[a-z0-9_.-]{1,40}")
 LABEL = re.compile(r"[\w .()+-]{1,40}")
 TOKEN = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
-# Provider error names such as overloaded_error; digits would let IDs through.
-ERROR_NAME = re.compile(r"[a-z][a-z_.-]{0,47}")
 # Account labels can be emails or keys; these shapes fall back to a hash instead.
 SECRETISH = re.compile(r"[A-Za-z0-9_-]{20,}|\d{6,}")
-# Applied in order to the manager's failure summary, which comes from the upstream error body.
-REDACTIONS = [
-    # Also an email the manager already masked, such as ka***@example.com.
-    (re.compile(r"\S*@\S+"), "[email]"),
-    (re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+"), "[url]"),
-    (re.compile(r"(?i)\b(bearer|basic)\s+\S+"), r"\1 [redacted]"),
-    (re.compile(r"(?i)\b(api[_-]?key|key|token|secret|password|authorization)(\s*[:=]\s*[\"']?)[^\s\"',;]+"),
-     r"\1\2[redacted]"),
-    # Keys, tokens and opaque IDs are long runs without spaces.
-    (re.compile(r"[A-Za-z0-9+/=_.-]{20,}"), "[id]"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
-    (re.compile(r"\d{6,}"), "[number]"),
-]
+# The fields diagnostics reads from a CPA Manager Plus 1.14.2 event that may be absent but not null.
+STRINGS = ("request_id", "auth_label_snapshot", "auth_index", "source_hash", "auth_provider_snapshot")
+# The provider's own error message can quote the prompt, so each class has a fixed description instead.
+MESSAGES = {
+    "rate_limited": "Rate limited by the provider",
+    "overloaded": "Provider overloaded",
+    "unavailable": "Provider unavailable",
+    "timeout": "Request timed out",
+    "unauthorized": "Account not authorized by the provider",
+    "forbidden": "Access forbidden by the provider",
+    "bad_request": "Request rejected by the provider",
+    "not_found": "Model or endpoint not found",
+    "server_error": "Provider server error",
+    "client_error": "Request failed with a client error",
+    "interrupted": "Request ended without an upstream status",
+}
 
 
 class Unavailable(Exception):
@@ -64,8 +63,12 @@ def text(value, pattern):
     return None
 
 
+def integer(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def count(value):
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return value if integer(value) and value >= 0 else None
 
 
 def account(row):
@@ -80,77 +83,58 @@ def account(row):
     return None
 
 
-def classify(status, kind):
-    if "overload" in (kind or "").lower() or status == 529:
-        return "overloaded"
+def classify(status):
     if status in (None, 0, 499):
         return "interrupted"
     return {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found",
-            408: "timeout", 429: "rate_limited", 503: "unavailable", 504: "timeout"}.get(
+            408: "timeout", 429: "rate_limited", 503: "unavailable", 504: "timeout", 529: "overloaded"}.get(
         status, "server_error" if status >= 500 else "client_error")
 
 
-def message(summary):
-    """A short failure message with emails, URLs, keys and IDs removed."""
-    if not isinstance(summary, str):
-        return None
-    try:
-        parsed = json.loads(summary)
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict):
-        error = parsed.get("error")
-        inner = error.get("message") if isinstance(error, dict) else error
-        summary = inner if isinstance(inner, str) else parsed.get("message")
-        if not isinstance(summary, str):
-            return None
-    summary = "".join(" " if not character.isprintable() else character for character in summary)
-    for pattern, replacement in REDACTIONS:
-        summary = pattern.sub(replacement, summary)
-    summary = " ".join(summary.split())
-    if len(summary) > MESSAGE_LENGTH:
-        summary = summary[:MESSAGE_LENGTH - 3].rstrip() + "..."
-    return summary or None
+def compatible(row, from_ms, to_ms):
+    """Whether one event is a failure in the requested window, with the field types diagnostics reads."""
+    return (isinstance(row, dict) and row.get("failed") is True and isinstance(row.get("model"), str)
+            and integer(row.get("timestamp_ms")) and from_ms <= row["timestamp_ms"] <= to_ms
+            and all(isinstance(row.get(field, ""), str) for field in STRINGS)
+            and integer(row.get("output_tokens", 0))
+            and all(row.get(field) is None or integer(row[field]) for field in ("fail_status_code", "latency_ms"))
+            and (row.get("stream") is None or isinstance(row["stream"], bool)))
 
 
 def fact(row):
     """The allowlisted facts of one failed request; every other upstream field is dropped."""
     status = count(row.get("fail_status_code"))
-    kind = text(row.get("header_error_kind"), ERROR_NAME) or text(row.get("header_error_code"), ERROR_NAME)
-    stream = row.get("stream")
+    error = classify(status)
     return {
         "time": datetime.fromtimestamp(row["timestamp_ms"] / 1000, timezone.utc)
                         .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-        "model": text(row.get("model"), MODEL),
+        "model": text(row["model"], MODEL),
         "provider": text(row.get("auth_provider_snapshot"), PROVIDER),
         "account": account(row),
         "status": status,
-        "error": classify(status, kind),
-        "upstream_error": kind,
-        "message": message(row.get("fail_summary")),
-        "streamed": stream if isinstance(stream, bool) else None,
+        "error": error,
+        "message": MESSAGES[error],
+        "streamed": row.get("stream"),
         "output_tokens": count(row.get("output_tokens")),
         "duration_ms": count(row.get("latency_ms")),
         "request_id": text(row.get("request_id"), TOKEN),
     }
 
 
-def failures(payload):
-    """Check the manager's answer against the interface diagnostics was built for."""
+def failures(payload, from_ms, to_ms, limit):
+    """Check the manager's answer against the interface and filter diagnostics asked for."""
     events = payload.get("events") if isinstance(payload, dict) else None
     items = events.get("items") if isinstance(events, dict) else None
-    if not isinstance(items, list):
+    # A row outside the request, such as a success, means the manager ignored or changed a filter.
+    if (not isinstance(items, list) or len(items) > limit or not isinstance(events.get("has_more"), bool)
+            or not all(compatible(row, from_ms, to_ms) for row in items)):
         raise Unavailable("interface_incompatible")
-    for row in items:
-        # A row that is not a failure means the manager ignored the failed-only filter.
-        if (not isinstance(row, dict) or row.get("failed") is not True
-                or not 0 < (count(row.get("timestamp_ms")) or 0) < MAX_TIMESTAMP_MS):
-            raise Unavailable("interface_incompatible")
-    return [fact(row) for row in items], events.get("has_more") is True
+    return [fact(row) for row in items], events["has_more"]
 
 
 def query(admin_key, hours, limit, now_ms, manager=MANAGER):
-    body = {"from_ms": now_ms - hours * 3_600_000, "to_ms": now_ms, "now_ms": now_ms, "time_zone": "UTC",
+    from_ms = now_ms - hours * 3_600_000
+    body = {"from_ms": from_ms, "to_ms": now_ms, "now_ms": now_ms, "time_zone": "UTC",
             "filters": {"failed_only": True}, "include": {"events_page": {"limit": limit}}}
     request = urllib.request.Request(manager + ANALYTICS, data=json.dumps(body).encode(), method="POST",
                                      headers={"Authorization": f"Bearer {admin_key}",
@@ -168,7 +152,7 @@ def query(admin_key, hours, limit, now_ms, manager=MANAGER):
         raise Unavailable("interface_incompatible") from None
     except OSError:
         raise Unavailable("manager_unreachable") from None
-    return failures(payload)
+    return failures(payload, from_ms, now_ms, limit)
 
 
 def number(values, name, default, maximum):

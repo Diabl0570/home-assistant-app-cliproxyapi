@@ -12,7 +12,7 @@
 | `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
 | `retry_other_accounts` | Retry a failed request on your other accounts; true by default. Off only stops that retry within the same request; see [Routing](#routing). |
 | `blocked_models` | Exact model IDs, without a credential prefix, that the proxy neither lists nor serves; `gpt-6-sol` and `gpt-5.6-sol` by default, plus Devin's `devin/gpt-6-sol` and `devin/gpt-5-6-sol`. An empty list blocks nothing. See [Blocked models](#blocked-models) for the limits. |
-| `diagnostics_keys` | Optional keys for the read-only [diagnostics](#diagnostics) endpoint on port 18318; empty (off) by default. Each needs at least 24 characters without leading or trailing spaces and must differ from `api_keys` and `management_password`. |
+| `diagnostics_keys` | Optional keys for the read-only [diagnostics](#diagnostics) endpoint on port 18318; empty (off) by default. Each needs at least 24 characters without leading or trailing spaces and must differ from `api_keys` and `management_password`, also when those have surrounding spaces. |
 
 Generate distinct random credentials, for example with `openssl rand -hex 32`. Save them in app configuration before starting. The wrapper rejects empty client keys and short management passwords without printing the secret values.
 
@@ -45,19 +45,18 @@ curl -H 'Authorization: Bearer <diagnostics-key>' 'http://HOME_ASSISTANT_IP:1831
 | `provider` | The provider of the account that served it, such as `codex`. |
 | `account` | The account's configured label, or `acct-` and a short stable hash when the label is missing or looks like an email or key. |
 | `status` | The upstream HTTP status. |
-| `error` | `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (no status). |
-| `upstream_error` | The provider's error name, such as `overloaded_error`, when it sent one. |
-| `message` | A short failure message with emails, URLs, keys, long IDs, IP addresses and long numbers replaced by placeholders. |
+| `error` | The class of `status`: `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (no status). |
+| `message` | A fixed description of `error`, such as `Provider overloaded`. It is never the provider's own error message, which can quote the prompt. |
 | `streamed` | Whether the client asked for a streamed response. |
 | `output_tokens` | Output tokens counted before the failure. |
 | `duration_ms` | How long the request took. |
 | `request_id` | The proxy's request ID. |
 
-It never returns prompts, responses, headers, client or provider keys, OAuth or auth-file contents, emails, client addresses or configuration, and it cannot change anything. A diagnostics key is not accepted by the API or either management panel, and the client keys and management password are not accepted by diagnostics.
+It never returns prompts, responses, provider error messages, headers, client or provider keys, OAuth or auth-file contents, emails, client addresses or configuration, and it cannot change anything. A diagnostics key is not accepted by the API or either management panel, and the client keys and management password are not accepted by diagnostics.
 
 Diagnostics is a small separate process in the app. It reads the failed requests from CPA Manager Plus's request history, the query behind its Monitoring page, using the management password internally, and passes on only the fields above. It needs the history CPA Manager Plus keeps, so failures before the history started, or while usage statistics are switched off, are not listed. Diagnostics does not log requests.
 
-When CPA Manager Plus is not reachable, or its interface no longer matches what diagnostics expects, the endpoint answers `503` with `{"status": "unavailable", "reason": ...}` instead of guessing; the reason is `manager_unreachable`, `manager_unauthorized`, `manager_error`, `interface_incompatible` or `busy`. The proxy and CPA Manager Plus keep running whether diagnostics works, fails to start or stops, and invalid `diagnostics_keys` only turn diagnostics off, with a note in the app log.
+When CPA Manager Plus is not reachable, or its answer no longer matches what diagnostics asked for and expects (the fields and types it reads, only failures, only the requested hours and at most `limit` of them), the endpoint answers `503` with `{"status": "unavailable", "reason": ...}` instead of guessing; the reason is `manager_unreachable`, `manager_unauthorized`, `manager_error`, `interface_incompatible` or `busy`. The proxy and CPA Manager Plus keep running whether diagnostics works, fails to start or stops, and invalid `diagnostics_keys` only turn diagnostics off, with a note in the app log.
 
 ## Provider setup
 
@@ -147,7 +146,7 @@ API and the stock management panel share TCP 8317; CPA Manager Plus uses TCP 183
 - UI unavailable: check app logs and port mapping; the stock panel also needs outbound access for its initial download.
 - CPA Manager Plus login fails: use the current `management_password` and restart the app after changing it.
 - CPA Manager Plus Monitoring is empty: send a new request through the proxy and check that usage statistics are enabled in the panel.
-- Diagnostics refuses connections: set `diagnostics_keys` and restart; the app log says when invalid keys turned it off. `401` means the key is not one of `diagnostics_keys`. `503` with `interface_incompatible` means the pinned CPA Manager Plus no longer offers the query diagnostics uses; the proxy is unaffected, and diagnostics stays unavailable until an app update adapts it.
+- Diagnostics refuses connections: set `diagnostics_keys` and restart; the app log says when invalid keys turned it off. `401` means the key is not one of `diagnostics_keys`. `503` with `interface_incompatible` means the pinned CPA Manager Plus no longer offers the query diagnostics uses or answers it differently; the proxy is unaffected, and diagnostics stays unavailable until an app update adapts it.
 - Image pull denied: maintainer must publish the corresponding image version and make its GHCR package public.
 - On-device acceptance: verify startup, Web UI, provider login, authenticated request, backup and restart on your HAOS system before relying on it.
 
@@ -165,6 +164,6 @@ Back up the app before updating; the manager database migrates forward on start.
 
 Upstream updates stay plain version and checksum bumps of the official CLIProxyAPI and CPA Manager Plus releases. The app never patches or rebuilds either upstream; diagnostics is a separate process that only reads CPA Manager Plus's existing request-history query, so the update workflow needs no changes for it.
 
-Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, without accounts or credentials. It then checks that diagnostics lists the failure with only the allowed fields and no secrets, that it answers `interface_incompatible` when the query is missing, and that stopping diagnostics leaves the proxy running.
+Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, without accounts or credentials. It then checks that diagnostics accepts the real CPA Manager Plus answer and lists the failure with only the allowed fields, the fixed message and no secrets or provider error text; that it answers `interface_incompatible` when the query is missing; and that stopping diagnostics leaves the proxy running.
 
-If an upstream release changes that query, only this check fails: the image build, smoke test and publishing do not depend on it. You can merge the update anyway, and diagnostics then answers `unavailable` while the proxy works normally, or adapt diagnostics in the same pull request first.
+If an upstream release changes that query or the fields and types it returns, only this check fails: the image build, smoke test and publishing do not depend on it. You can merge the update anyway, and diagnostics then answers `unavailable` while the proxy works normally, or adapt diagnostics in the same pull request first.

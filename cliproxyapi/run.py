@@ -231,7 +231,9 @@ def prepare_diagnostics(data, key_file):
     ):
         return None, ("diagnostics_keys must each be a random key of at least 24 characters "
                       "without leading or trailing spaces")
-    if any(key == options["management_password"] or key in options["api_keys"] for key in keys):
+    # CLIProxyAPI trims client keys and CPA Manager Plus its key file; Python strips at least the same spaces.
+    taken = {options["management_password"].strip(), *(key.strip() for key in options["api_keys"])}
+    if any(key in taken for key in keys):
         return None, "diagnostics_keys must differ from api_keys and management_password"
     if not keys:
         return None, None

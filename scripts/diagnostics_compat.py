@@ -20,8 +20,8 @@ PROVIDER_KEY = "ci-fake-provider-key-1234567890abcdef"
 PROMPT = "ci-prompt-marker-must-not-appear"
 EMAIL = "someone@example.com"
 SECRETS = [KEY, PASSWORD, DIAGNOSTICS_KEY, PROVIDER_KEY, PROMPT, EMAIL]
-FIELDS = {"time", "model", "provider", "account", "status", "error", "upstream_error", "message",
-          "streamed", "output_tokens", "duration_ms", "request_id"}
+FIELDS = {"time", "model", "provider", "account", "status", "error", "message", "streamed", "output_tokens",
+          "duration_ms", "request_id"}
 # Answers everything with 529 and an Anthropic-style overload body naming an email and a key.
 FAKE_PROVIDER = f"""
 import http.server, json
@@ -48,6 +48,20 @@ import diagnostics
 diagnostics.ANALYTICS = "/v0/management/monitoring/changed"
 service = diagnostics.Diagnostics([hashlib.sha256(b"{DIAGNOSTICS_KEY}").hexdigest()], "{PASSWORD}")
 print(service.answer("GET", diagnostics.PATH, "Bearer {DIAGNOSTICS_KEY}")[1]["reason"])
+"""
+# Runs inside the container: kills only the sidecar run.py starts, never this script or another process.
+STOP_DIAGNOSTICS = """
+import os, signal
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    if int(pid) == os.getpid():
+        continue
+    try:
+        argv = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\\0")
+    except OSError:
+        continue
+    if (len(argv) > 1 and os.path.basename(argv[0]).startswith(b"python")
+            and argv[1] == b"/usr/local/bin/diagnostics.py"):
+        os.kill(int(pid), signal.SIGKILL)
 """
 
 
@@ -133,16 +147,14 @@ with tempfile.TemporaryDirectory() as directory:
         failure = failures[0]
         assert failure["model"] == "diag-fake-model", failure
         assert failure["status"] == 529 and failure["error"] == "overloaded", failure
+        assert failure["message"] == "Provider overloaded", failure
         assert isinstance(failure["duration_ms"], int), failure
         assert not any(secret in text for secret in SECRETS), "diagnostics returned a secret or prompt"
         print("diagnostics:", json.dumps(failure))
         reason = subprocess.check_output(["docker", "exec", NAME, "python3", "-c", CHANGED_INTERFACE], text=True)
         assert reason.strip() == "interface_incompatible", reason
         # Diagnostics stopping leaves the proxy and the manager running.
-        subprocess.run(["docker", "exec", NAME, "python3", "-c",
-                        "import os, signal\nfor pid in filter(str.isdigit, os.listdir('/proc')):\n"
-                        "    if b'diagnostics.py' in open(f'/proc/{pid}/cmdline', 'rb').read():\n"
-                        "        os.kill(int(pid), signal.SIGKILL)"], check=True)
+        subprocess.run(["docker", "exec", NAME, "python3", "-c", STOP_DIAGNOSTICS], check=True)
         time.sleep(2)
         assert refused(), "diagnostics still answers after being stopped"
         assert api(KEY) == 200, "proxy stopped with diagnostics"

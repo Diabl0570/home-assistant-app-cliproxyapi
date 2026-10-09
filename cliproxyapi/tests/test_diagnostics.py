@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 
@@ -23,15 +24,22 @@ spec.loader.exec_module(startup)
 
 KEY = "a-diagnostics-key-123456789012345"
 ADMIN = "a-separate-random-password-12345"
+# Whitespace Go's strings.TrimSpace removes from CLIProxyAPI client keys and CPA Manager Plus key files.
+PADDING = [" ", "\t", "\n", "\r\n", "\v", "\f", "\u0085", "\u00a0", "\u2003", "\u3000", " \t\u00a0\n"]
 SECRET = "sk-live-0123456789abcdefghijklmnop"
-FIELDS = {"time", "model", "provider", "account", "status", "error", "upstream_error", "message",
-          "streamed", "output_tokens", "duration_ms", "request_id"}
+FIELDS = {"time", "model", "provider", "account", "status", "error", "message", "streamed", "output_tokens",
+          "duration_ms", "request_id"}
+EVENT_MS = 1_767_323_045_000
+NOW_MS = EVENT_MS + 60_000
+# CPA Manager Plus keeps the provider's error body summary; it can quote the prompt, an email and a key.
+SUMMARY = json.dumps({"error": {"type": "rate_limit_error", "message": (
+    "Invalid prompt: send payroll to Alice at person@example.com using " + SECRET)}})
 
 
 def row(**fields):
     """A failed event as CPA Manager Plus 1.14.2 returns it, with secrets in every field diagnostics drops."""
     return {
-        "request_id": "req_01", "event_hash": "e" * 64, "timestamp_ms": 1_767_323_045_000,
+        "request_id": "req_01", "event_hash": "e" * 64, "timestamp_ms": EVENT_MS,
         "model": "gpt-6.1-sol", "requested_model": "secret-requested", "session_id": SECRET,
         "access_token_sha256": "f" * 64, "stream": True, "endpoint": "/v1/responses", "method": "POST",
         "path": "/v1/responses?key=" + SECRET, "client_ip": "192.168.1.20", "x_forwarded_for": "10.0.0.1",
@@ -40,10 +48,22 @@ def row(**fields):
         "auth_label_snapshot": "Work account", "auth_file_snapshot": "codex-person@example.com.json",
         "auth_provider_snapshot": "codex", "auth_account_id_snapshot": "acct-123456789",
         "input_tokens": 100, "output_tokens": 7, "latency_ms": 1234, "ttft_ms": 200, "failed": True,
-        "fail_status_code": 429, "fail_summary": "Rate limit reached", "header_error_kind": "rate_limit_error",
+        "fail_status_code": 429, "fail_summary": SUMMARY, "header_error_kind": "rate_limit_error",
         "header_trace_id": SECRET, "response_metadata": {"headers": {"authorization": "Bearer " + SECRET}},
         **fields,
     }
+
+
+def without(*names):
+    """A failed event lacking the named fields."""
+    event = row()
+    for name in names:
+        del event[name]
+    return event
+
+
+def page(*items, has_more=False):
+    return {"events": {"items": list(items), "has_more": has_more}}
 
 
 class Manager(BaseHTTPRequestHandler):
@@ -69,12 +89,15 @@ class DiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.manager = ThreadingHTTPServer(("127.0.0.1", 0), Manager)
         self.manager.requests = []
-        self.manager.reply = (200, {"events": {"items": [row()], "has_more": False}})
+        self.manager.reply = (200, page(row()))
         threading.Thread(target=self.manager.serve_forever, daemon=True).start()
         self.addCleanup(self.manager.server_close)
         self.addCleanup(self.manager.shutdown)
         url = f"http://127.0.0.1:{self.manager.server_address[1]}"
         self.service = diagnostics.Diagnostics([hashlib.sha256(KEY.encode()).hexdigest()], ADMIN, url)
+        clock = patch.object(diagnostics.time, "time", return_value=NOW_MS / 1000)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def get(self, target=diagnostics.PATH, key=KEY, method="GET"):
         status, body = self.service.answer(method, target, f"Bearer {key}" if key else None)
@@ -99,7 +122,6 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.manager.requests, [])
 
     def test_queries_the_manager_for_recent_failures_only(self):
-        before = int(time.time() * 1000)
         status, body, _ = self.get()
         self.assertEqual(status, 200)
         self.assertEqual((body["status"], body["hours"], body["limit"], body["truncated"]), ("ok", 24, 50, False))
@@ -107,8 +129,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual((method, path, authorization), ("POST", diagnostics.ANALYTICS, f"Bearer {ADMIN}"))
         self.assertEqual(request["filters"], {"failed_only": True})
         self.assertEqual(request["include"], {"events_page": {"limit": 50}})
-        self.assertEqual(request["to_ms"] - request["from_ms"], 24 * 3_600_000)
-        self.assertGreaterEqual(request["to_ms"], before)
+        self.assertEqual((request["from_ms"], request["to_ms"]), (NOW_MS - 24 * 3_600_000, NOW_MS))
         self.get(diagnostics.PATH + "?hours=168&limit=200")
         self.assertEqual(self.manager.requests[-1][3]["include"]["events_page"]["limit"], 200)
         self.assertEqual(self.manager.requests[-1][3]["to_ms"] - self.manager.requests[-1][3]["from_ms"],
@@ -127,20 +148,18 @@ class DiagnosticsTests(unittest.TestCase):
         [failure] = body["failures"]
         self.assertEqual(failure, {
             "time": "2026-01-02T03:04:05.000Z", "model": "gpt-6.1-sol", "provider": "codex",
-            "account": "Work account", "status": 429, "error": "rate_limited", "upstream_error": "rate_limit_error",
-            "message": "Rate limit reached", "streamed": True, "output_tokens": 7, "duration_ms": 1234,
+            "account": "Work account", "status": 429, "error": "rate_limited",
+            "message": "Rate limited by the provider", "streamed": True, "output_tokens": 7, "duration_ms": 1234,
             "request_id": "req_01",
         })
         for leaked in [SECRET, "person@example.com", "192.168.1.20", "10.0.0.1", "secret-requested", "f" * 64,
-                       "k" * 16, "acct-123456789", "/v1/responses"]:
+                       "k" * 16, "acct-123456789", "/v1/responses", "rate_limit_error"]:
             self.assertNotIn(leaked, text)
 
     def test_unexpected_and_nested_upstream_fields_never_pass_through(self):
         self.manager.reply = (200, {"events": {"items": [row(
             prompt="the prompt " + SECRET, messages=[{"content": SECRET}], response={"text": SECRET},
-            headers={"Authorization": "Bearer " + SECRET}, model={"nested": SECRET},
-            request_id={"id": SECRET}, auth_provider_snapshot=["codex", SECRET], stream="yes",
-            output_tokens="7", latency_ms=-1, fail_status_code=True,
+            headers={"Authorization": "Bearer " + SECRET}, header_error_code=SECRET,
         )], "has_more": True, "secret": SECRET}, "summary": {"api_key": SECRET}})
         status, body, text = self.get()
         self.assertEqual(status, 200)
@@ -148,16 +167,41 @@ class DiagnosticsTests(unittest.TestCase):
         [failure] = body["failures"]
         self.assertEqual(set(failure), FIELDS)
         self.assertNotIn(SECRET, text)
-        for field in ["model", "provider", "status", "streamed", "output_tokens", "duration_ms", "request_id"]:
-            self.assertIsNone(failure[field], field)
-        self.assertEqual(failure["error"], "interrupted")
 
-    def test_upstream_error_is_only_an_error_name(self):
-        for kind, code, expected in [("overloaded_error", None, "overloaded_error"), (SECRET, "insufficient_quota",
-                                     "insufficient_quota"), ("req_0123456789", None, None), ("Bearer x", None, None)]:
-            with self.subTest(kind=kind):
-                failure = diagnostics.fact(row(header_error_kind=kind, header_error_code=code))
-                self.assertEqual(failure["upstream_error"], expected)
+    def test_the_failure_message_never_carries_upstream_text(self):
+        for summary in [SUMMARY, "Invalid prompt: send payroll to Alice", "person@example.com " + SECRET,
+                        json.dumps({"error": "send payroll to Alice"})]:
+            for code, message in [(429, "Rate limited by the provider"), (529, "Provider overloaded"),
+                                  (400, "Request rejected by the provider"),
+                                  (None, "Request ended without an upstream status")]:
+                with self.subTest(summary=summary, code=code):
+                    self.manager.reply = (200, page(row(fail_summary=summary, fail_status_code=code)))
+                    status, body, text = self.get()
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body["failures"][0]["message"], message)
+                    for leaked in ["prompt", "payroll", "Alice", "person@example.com", SECRET]:
+                        self.assertNotIn(leaked, text)
+
+    def test_absent_or_null_optional_fields_are_null(self):
+        self.manager.reply = (200, page(
+            without("fail_status_code", "stream", "output_tokens", "request_id", "auth_label_snapshot",
+                    "auth_index", "source_hash", "auth_provider_snapshot"),
+            row(latency_ms=None, fail_status_code=None, stream=None),
+            row(model="", auth_provider_snapshot="Not A Provider!", request_id="req 01", latency_ms=-1,
+                output_tokens=-1, fail_status_code=-1),
+        ))
+        status, body, _ = self.get()
+        self.assertEqual(status, 200)
+        absent, null, unsafe = body["failures"]
+        for field in ["status", "streamed", "output_tokens", "request_id", "account", "provider"]:
+            self.assertIsNone(absent[field], field)
+        for field in ["status", "streamed", "duration_ms"]:
+            self.assertIsNone(null[field], field)
+        for field in ["model", "provider", "request_id", "duration_ms", "output_tokens", "status"]:
+            self.assertIsNone(unsafe[field], field)
+        for failure in body["failures"]:
+            self.assertEqual((failure["error"], failure["message"]),
+                             ("interrupted", "Request ended without an upstream status"))
 
     def test_account_is_a_label_or_a_stable_hash_never_an_email_or_key(self):
         hashed = "acct-" + hashlib.sha256(b"a1b2c3").hexdigest()[:10]
@@ -170,30 +214,15 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIsNone(diagnostics.account({"auth_label_snapshot": "person@example.com"}))
         self.assertEqual(diagnostics.account(row(auth_label_snapshot="Team (backup)")), "Team (backup)")
 
-    def test_failure_messages_are_short_and_redacted(self):
-        summary = json.dumps({"error": {"type": "overloaded_error", "message": (
-            "Overloaded for person@example.com and ka***@example.com with key sk-ant-api03-abcdefghijklmnopqrstu "
-            "Bearer abc.def api_key=short1 token: 'tok9' at https://api.example.com/v1?key=x from 203.0.113.7 "
-            "org 123456789 eyJhbGciOi.eyJzdWIi.sig\x00\n" + "x " * 200)}})
-        message = diagnostics.message(summary)
-        self.assertLessEqual(len(message), diagnostics.MESSAGE_LENGTH)
-        self.assertTrue(message.startswith("Overloaded for [email] and [email] with key [id] Bearer [redacted] "
-                                           "api_key=[redacted] token: '[redacted]' at [url] from [ip] org [number]"))
-        for leaked in ["person", "example.com", "sk-ant", "abc.def", "short1", "tok9", "203.0.113.7", "123456789",
-                       "eyJ", "\x00"]:
-            self.assertNotIn(leaked, message)
-        self.assertEqual(diagnostics.message("upstream gpt-6 v1 error"), "upstream gpt-6 v1 error")
-        self.assertIsNone(diagnostics.message({"error": SECRET}))
-        self.assertIsNone(diagnostics.message(json.dumps({"error": {"message": {"nested": SECRET}}})))
-
-    def test_error_classes(self):
-        for status, kind, expected in [(429, None, "rate_limited"), (529, None, "overloaded"),
-                                       (500, "overloaded_error", "overloaded"), (503, None, "unavailable"),
-                                       (None, None, "interrupted"), (0, None, "interrupted"),
-                                       (499, None, "interrupted"), (502, None, "server_error"),
-                                       (401, None, "unauthorized"), (418, None, "client_error")]:
-            with self.subTest(status=status, kind=kind):
-                self.assertEqual(diagnostics.classify(status, kind), expected)
+    def test_error_classes_come_from_the_status(self):
+        for status, expected in [(429, "rate_limited"), (529, "overloaded"), (500, "server_error"),
+                                 (503, "unavailable"), (None, "interrupted"), (0, "interrupted"),
+                                 (499, "interrupted"), (502, "server_error"), (401, "unauthorized"),
+                                 (418, "client_error")]:
+            with self.subTest(status=status):
+                self.assertEqual(diagnostics.classify(status), expected)
+                failure = diagnostics.fact(row(fail_status_code=status, header_error_kind="overloaded_error"))
+                self.assertEqual(failure["error"], expected)
 
     def test_incompatible_or_missing_manager_is_explicitly_unavailable(self):
         cases = [
@@ -202,11 +231,37 @@ class DiagnosticsTests(unittest.TestCase):
             ((400, {"error": SECRET}), "interface_incompatible"),
             ((200, b"<html>" + SECRET.encode()), "interface_incompatible"),
             ((200, {"items": [row()]}), "interface_incompatible"),
-            ((200, {"events": {"rows": [row()]}}), "interface_incompatible"),
-            ((200, {"events": {"items": [row(failed=False)]}}), "interface_incompatible"),
-            ((200, {"events": {"items": [row(timestamp_ms="2026")]}}), "interface_incompatible"),
-            ((200, {"events": {"items": [row(timestamp_ms=10 ** 18)]}}), "interface_incompatible"),
-            ((200, {"events": {"items": ["text"]}}), "interface_incompatible"),
+            ((200, {"events": {"rows": [row()], "has_more": False}}), "interface_incompatible"),
+            ((200, {"events": {"items": [row()]}}), "interface_incompatible"),
+            ((200, page(row(), has_more="false")), "interface_incompatible"),
+            ((200, page(row(), has_more=0)), "interface_incompatible"),
+            ((200, page(row(), has_more=None)), "interface_incompatible"),
+            ((200, page(row(failed=False))), "interface_incompatible"),
+            ((200, page(without("failed"))), "interface_incompatible"),
+            ((200, page(row(timestamp_ms="2026"))), "interface_incompatible"),
+            ((200, page(row(timestamp_ms=float(EVENT_MS)))), "interface_incompatible"),
+            ((200, page(row(timestamp_ms=10 ** 18))), "interface_incompatible"),
+            ((200, page(row(timestamp_ms=NOW_MS - 24 * 3_600_000 - 1))), "interface_incompatible"),
+            ((200, page(row(timestamp_ms=NOW_MS + 1))), "interface_incompatible"),
+            ((200, page(*[row()] * (diagnostics.DEFAULT_LIMIT + 1))), "interface_incompatible"),
+            ((200, page(row(fail_status_code="529"))), "interface_incompatible"),
+            ((200, page(row(fail_status_code=True))), "interface_incompatible"),
+            ((200, page(row(fail_status_code=529.0))), "interface_incompatible"),
+            ((200, page(without("model"))), "interface_incompatible"),
+            ((200, page(row(model=None))), "interface_incompatible"),
+            ((200, page(row(model={"nested": SECRET}))), "interface_incompatible"),
+            ((200, page(row(latency_ms="1234"))), "interface_incompatible"),
+            ((200, page(row(stream="yes"))), "interface_incompatible"),
+            ((200, page(row(stream=1))), "interface_incompatible"),
+            ((200, page(row(output_tokens="7"))), "interface_incompatible"),
+            ((200, page(row(output_tokens=None))), "interface_incompatible"),
+            ((200, page(row(request_id={"id": SECRET}))), "interface_incompatible"),
+            ((200, page(row(request_id=None))), "interface_incompatible"),
+            ((200, page(row(auth_provider_snapshot=["codex", SECRET]))), "interface_incompatible"),
+            ((200, page(row(auth_label_snapshot=None))), "interface_incompatible"),
+            ((200, page(row(auth_index=5))), "interface_incompatible"),
+            ((200, page(row(source_hash=False))), "interface_incompatible"),
+            ((200, page(row(), "text")), "interface_incompatible"),
             ((200, []), "interface_incompatible"),
             ((401, {"error": "invalid admin key"}), "manager_unauthorized"),
             ((500, {"error": SECRET}), "manager_error"),
@@ -217,6 +272,16 @@ class DiagnosticsTests(unittest.TestCase):
                 status, body, text = self.get()
                 self.assertEqual((status, body), (503, {"status": "unavailable", "reason": reason}))
                 self.assertNotIn(SECRET, text)
+
+    def test_rows_within_the_requested_window_and_limit_are_compatible(self):
+        self.manager.reply = (200, page(row(timestamp_ms=NOW_MS - 3_600_000), row(timestamp_ms=NOW_MS),
+                                        has_more=True))
+        status, body, _ = self.get(diagnostics.PATH + "?hours=1&limit=2")
+        self.assertEqual((status, body["truncated"], len(body["failures"])), (200, True, 2))
+        status, body, _ = self.get(diagnostics.PATH + "?hours=1&limit=1")
+        self.assertEqual((status, body), (503, {"status": "unavailable", "reason": "interface_incompatible"}))
+        self.manager.reply = (200, page())
+        self.assertEqual(self.get()[1]["failures"], [])
 
     def test_unreachable_manager_is_unavailable(self):
         with socket.socket() as unused:
@@ -282,8 +347,9 @@ class StartupDiagnosticsTests(unittest.TestCase):
         self.assertNotIn(KEY, json.dumps(environment) + keys_file.read_text())
 
     def test_invalid_keys_turn_diagnostics_off_without_stopping_startup(self):
-        for keys in [["short"], [" " + KEY], [KEY + " "], [ADMIN], ["client-key" * 3],
-                     [KEY, 5], "not-a-list"]:
+        padded = [[padding] for pad in PADDING for key in [KEY, ADMIN, "client-key" * 3]
+                  for padding in [pad + key, key + pad, pad + key + pad]]
+        for keys in [["short"], [ADMIN], ["client-key" * 3], [KEY, 5], "not-a-list", *padded]:
             with self.subTest(keys=keys):
                 (self.data / "options.json").write_text(json.dumps(
                     {"api_keys": ["client-key" * 3], "management_password": ADMIN, "diagnostics_keys": keys}))
@@ -291,6 +357,17 @@ class StartupDiagnosticsTests(unittest.TestCase):
                 self.assertIsNone(environment)
                 self.assertIn("diagnostics_keys", problem)
                 self.assertNotIn(ADMIN, problem)
+
+    def test_keys_the_proxy_or_manager_accept_after_trimming_are_rejected(self):
+        for pad in PADDING:
+            for options in [{"api_keys": [pad + KEY + pad]}, {"api_keys": ["client-key", KEY + pad]},
+                            {"management_password": pad + KEY + pad}]:
+                with self.subTest(pad=pad, options=options):
+                    self.assertEqual(self.prepare(diagnostics_keys=[KEY], **options),
+                                     (None, "diagnostics_keys must differ from api_keys and management_password"))
+        environment, problem = self.prepare(diagnostics_keys=[KEY], api_keys=[" client-key-" + KEY])
+        self.assertIsNone(problem)
+        self.assertIsNotNone(environment)
 
     def test_proxy_keeps_running_when_diagnostics_exits_or_cannot_start(self):
         started = time.monotonic()
