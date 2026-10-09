@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -67,11 +68,12 @@ def page(*items, has_more=False):
 
 
 class Manager(BaseHTTPRequestHandler):
-    """A fake CPA Manager Plus that records requests and answers with the server's configured reply."""
+    """A fake CPA Manager Plus that records requests and, once released, answers with the configured reply."""
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.requests.append((self.command, self.path, self.headers.get("Authorization"), body))
+        self.server.released.wait(10)
         status, payload = self.server.reply
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
@@ -90,6 +92,8 @@ class DiagnosticsTests(unittest.TestCase):
         self.manager = ThreadingHTTPServer(("127.0.0.1", 0), Manager)
         self.manager.requests = []
         self.manager.reply = (200, page(row()))
+        self.manager.released = threading.Event()
+        self.manager.released.set()
         threading.Thread(target=self.manager.serve_forever, daemon=True).start()
         self.addCleanup(self.manager.server_close)
         self.addCleanup(self.manager.shutdown)
@@ -307,6 +311,42 @@ class DiagnosticsTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(urllib.request.Request(url, method="POST", data=b"{}"), timeout=5)
             self.assertEqual(error.exception.code, 405)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_client_that_hangs_up_mid_request_leaves_nothing_in_the_log(self):
+        server = diagnostics.serve(self.service, ("127.0.0.1", 0))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        # The server closes each connection last, after reporting any error, so this marks a finished request.
+        finished = threading.Semaphore(0)
+        close = server.shutdown_request
+
+        def closed(request):
+            close(request)
+            finished.release()
+
+        server.shutdown_request = closed
+        self.manager.released.clear()
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            client = socket.create_connection(server.server_address, timeout=5)
+            client.sendall(f"GET {diagnostics.PATH} HTTP/1.1\r\nHost: diagnostics\r\n"
+                           f"Authorization: Bearer {KEY}\r\n\r\n".encode())
+            deadline = time.monotonic() + 5
+            while not self.manager.requests and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(self.manager.requests, "the manager query did not start")
+            # Without lingering, closing resets the connection while diagnostics still waits for the manager.
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            client.close()
+            self.manager.released.set()
+            self.assertTrue(finished.acquire(timeout=10))
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}{diagnostics.PATH}",
+                                             headers={"Authorization": f"Bearer {KEY}"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual((response.status, json.loads(response.read())["status"]), (200, "ok"))
+            self.assertTrue(finished.acquire(timeout=10))
         self.assertEqual(stderr.getvalue(), "")
 
     def test_main_without_keys_stays_off(self):

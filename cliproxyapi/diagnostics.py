@@ -234,11 +234,18 @@ class Handler(BaseHTTPRequestHandler):
         pass  # No request log: it would carry client addresses and query strings into the app log.
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # Answers already turn their own errors into a 500, so what reaches here is a client that hung up or
+        # timed out. The default report would print its address and a traceback into the app log.
+        pass
+
+
 def serve(diagnostics, address=("0.0.0.0", PORT)):
     handler = type("BoundHandler", (Handler,), {"diagnostics": diagnostics})
-    server = ThreadingHTTPServer(address, handler)
-    server.daemon_threads = True
-    return server
+    return Server(address, handler)
 
 
 def main(environ=os.environ):
