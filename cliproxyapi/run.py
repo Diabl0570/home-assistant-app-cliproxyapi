@@ -11,6 +11,10 @@ import yaml
 
 MANAGER_PORT = 18317
 STRATEGIES = ("round-robin", "fill-first")
+# CLIProxyAPI waits this many seconds after a timeout or 5xx error before retrying,
+# and gives up at once when a retry would need a longer wait than RETRY_MAX_WAIT.
+RETRY_WAIT = 5
+RETRY_MAX_WAIT = 30
 # A subset of Go durations, which CLIProxyAPI parses: 1h, 30m, 2h30m, 90s.
 TTL = re.compile(r"(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
 # Devin lists its models as devin/<id> and names GPT-5.6 Sol gpt-5-6-sol.
@@ -149,10 +153,11 @@ def prepare(data=Path("/data")):
     affinity = options.get("session_affinity", True)
     ttl = options.get("session_affinity_ttl", "1h")
     retry = options.get("retry_other_accounts", True)
+    before_output = options.get("retry_before_output", True)
     if strategy not in STRATEGIES:
         raise ValueError("routing_strategy must be round-robin or fill-first")
-    if not isinstance(affinity, bool) or not isinstance(retry, bool):
-        raise ValueError("session_affinity and retry_other_accounts must be true or false")
+    if not all(isinstance(value, bool) for value in (affinity, retry, before_output)):
+        raise ValueError("session_affinity, retry_other_accounts and retry_before_output must be true or false")
     match = TTL.fullmatch(ttl) if isinstance(ttl, str) else None
     if not match or not any(int(part or 0) for part in match.groups()):
         raise ValueError("session_affinity_ttl must be a positive duration such as 1h or 30m")
@@ -187,8 +192,13 @@ def prepare(data=Path("/data")):
     routing.update({"strategy": strategy, "session-affinity": affinity,
                     "session-affinity-ttl": ttl})
     # Retrying tries the other accounts for a failed request; off limits it to one account.
+    # CLIProxyAPI retries only before the first output; waiting lets a retry round follow a cooldown.
+    # Off writes CLIProxyAPI's own defaults: no waiting, and the legacy 60-second transient cooldown.
+    waiting = retry and before_output
     section(routing, "retry").update({"request-retry": 3 if retry else 0,
-                                      "max-retry-credentials": 0 if retry else 1})
+                                      "max-retry-credentials": 0 if retry else 1,
+                                      "max-retry-interval": RETRY_MAX_WAIT if waiting else 0})
+    section(routing, "cooldown")["transient-error-cooldown-seconds"] = RETRY_WAIT if waiting else 0
     block_models(config, blocked)
     write(config_path, config)
     for credential in auths.rglob("*"):

@@ -1,3 +1,10 @@
+# 8.0.10-3
+
+- Add the `retry_before_output` app option using CLIProxyAPI's native retry settings. See [Retries before output](DOCS.md#retries-before-output) for defaults, fixed class waits, limits and off-switch behaviour.
+- The app now owns two additional routing fields; see [Routing](DOCS.md#routing) before changing retry settings in a panel.
+- Add a build-gating [retry check](DOCS.md#retries-before-output).
+- CLIProxyAPI remains at 8.0.10.
+
 # 8.0.10-2
 
 - Add an optional, read-only diagnostics endpoint on port 18318 that lists recent failed requests: time, model, provider, account label or short hash, upstream status, error class, a fixed description of that class, streaming, output tokens, duration and request ID. It never returns prompts, responses, provider error messages, headers, keys or emails. It is off until you set the new `diagnostics_keys` option, separate keys that the API and panels do not accept, even with surrounding spaces.

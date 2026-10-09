@@ -25,6 +25,9 @@ class StartupTests(unittest.TestCase):
     def write_options(self):
         (self.data / "options.json").write_text(json.dumps(self.options))
 
+    def write_options_with(self, **options):
+        (self.data / "options.json").write_text(json.dumps({**self.options, **options}))
+
     def write_config(self, config, value):
         config.write_text(json.dumps(value))
         return json.loads(startup.prepare(self.data).read_text())
@@ -52,7 +55,8 @@ class StartupTests(unittest.TestCase):
         saved = json.loads(startup.prepare(self.data).read_text())
         self.assertEqual(saved["routing"], {
             "strategy": "round-robin", "session-affinity": True, "session-affinity-ttl": "1h",
-            "retry": {"request-retry": 3, "max-retry-credentials": 0},
+            "retry": {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30},
+            "cooldown": {"transient-error-cooldown-seconds": 5},
         })
 
     def test_each_routing_option_overrides_its_default(self):
@@ -69,26 +73,62 @@ class StartupTests(unittest.TestCase):
                     routing = routing[key]
                 self.assertEqual(routing, expected)
 
-    def test_retry_other_accounts_sets_only_request_retry_fields(self):
-        for value, retry in [(True, {"request-retry": 3, "max-retry-credentials": 0}),
-                             (False, {"request-retry": 0, "max-retry-credentials": 1})]:
+    def test_retry_other_accounts_sets_only_retry_fields(self):
+        # Off keeps no retry at all, also before the first output, and CLIProxyAPI's own wait defaults.
+        for value, retry, wait in [(True, {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30}, 5),
+                                   (False, {"request-retry": 0, "max-retry-credentials": 1, "max-retry-interval": 0}, 0)]:
             with self.subTest(value=value):
                 (self.data / "options.json").write_text(json.dumps({**self.options, "retry_other_accounts": value}))
                 routing = json.loads(startup.prepare(self.data).read_text())["routing"]
                 self.assertEqual(routing, {"strategy": "round-robin", "session-affinity": True,
-                                           "session-affinity-ttl": "1h", "retry": retry})
+                                           "session-affinity-ttl": "1h", "retry": retry,
+                                           "cooldown": {"transient-error-cooldown-seconds": wait}})
+
+    def test_retry_before_output_sets_only_wait_fields(self):
+        cases = [
+            (True, True, {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30}, 5),
+            (False, True, {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 0}, 0),
+            (True, False, {"request-retry": 0, "max-retry-credentials": 1, "max-retry-interval": 0}, 0),
+            (False, False, {"request-retry": 0, "max-retry-credentials": 1, "max-retry-interval": 0}, 0),
+        ]
+        for before_output, other_accounts, retry, wait in cases:
+            with self.subTest(before_output=before_output, other_accounts=other_accounts):
+                self.write_options_with(retry_before_output=before_output, retry_other_accounts=other_accounts)
+                routing = json.loads(startup.prepare(self.data).read_text())["routing"]
+                self.assertEqual(routing["retry"], retry)
+                self.assertEqual(routing["cooldown"], {"transient-error-cooldown-seconds": wait})
+                self.assertEqual((routing["strategy"], routing["session-affinity"], routing["session-affinity-ttl"]),
+                                 ("round-robin", True, "1h"))
+
+    def test_retry_before_output_replaces_panel_wait_values_and_keeps_other_cooldown_fields(self):
+        config = startup.prepare(self.data)
+        panel = ("routing:\n  retry:\n    max-retry-interval: 120\n  cooldown:\n    disable-cooling: false\n"
+                 "    transient-error-cooldown-seconds: -1\n    save-cooldown-status: true\n")
+        for before_output, interval, wait in [(True, 30, 5), (False, 0, 0)]:
+            with self.subTest(before_output=before_output):
+                config.write_text(panel)
+                self.write_options_with(retry_before_output=before_output)
+                routing = json.loads(startup.prepare(self.data).read_text())["routing"]
+                self.assertEqual(routing["retry"]["max-retry-interval"], interval)
+                self.assertEqual(routing["cooldown"], {"disable-cooling": False, "transient-error-cooldown-seconds": wait,
+                                                       "save-cooldown-status": True})
+
+    def test_retry_before_output_defaults_on_in_app_options(self):
+        app = yaml.safe_load((Path(__file__).parents[1] / "config.yaml").read_text())
+        self.assertIs(app["options"]["retry_before_output"], True)
+        self.assertEqual(app["schema"]["retry_before_output"], "bool")
 
     def test_routing_options_replace_existing_routing_values(self):
         config = startup.prepare(self.data)
         config.write_text("routing:\n  strategy: fill-first\n  session-affinity: false\n  session-affinity-ttl: 5m\n"
                           "  session-affinity-subagents: false\n  retry:\n    request-retry: 0\n    max-retry-credentials: 1\n"
-                          "    max-retry-interval: 30\n  cooldown:\n    disable-cooling: true\n    save-cooldown-status: true\n")
+                          "    max-retry-interval: 120\n  cooldown:\n    disable-cooling: true\n    save-cooldown-status: true\n")
         routing = json.loads(startup.prepare(self.data).read_text())["routing"]
         self.assertEqual(routing, {
             "strategy": "round-robin", "session-affinity": True, "session-affinity-ttl": "1h",
             "session-affinity-subagents": False,
             "retry": {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30},
-            "cooldown": {"disable-cooling": True, "save-cooldown-status": True},
+            "cooldown": {"disable-cooling": True, "save-cooldown-status": True, "transient-error-cooldown-seconds": 5},
         })
 
     def test_empty_routing_section_gets_defaults(self):
@@ -212,6 +252,7 @@ class StartupTests(unittest.TestCase):
                              ("management_password", "trailing-space-password-12345\n"), ("logging", "false"),
                              ("routing_strategy", "random"), ("routing_strategy", "weighted-round-robin"),
                              ("session_affinity", "true"), ("retry_other_accounts", 1),
+                             ("retry_before_output", "true"), ("retry_before_output", 1), ("retry_before_output", None),
                              ("session_affinity_ttl", ""), ("session_affinity_ttl", "0h"), ("session_affinity_ttl", "1 hour"),
                              ("session_affinity_ttl", "-1h"), ("session_affinity_ttl", 3600),
                              ("blocked_models", "gpt-6-sol"), ("blocked_models", [""]), ("blocked_models", [1]),

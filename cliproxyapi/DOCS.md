@@ -11,6 +11,7 @@
 | `session_affinity` | Keep one conversation on the same account; true by default. |
 | `session_affinity_ttl` | How long an idle conversation stays bound to its account, such as `1h` (default), `30m` or `2h30m`. |
 | `retry_other_accounts` | Retry a failed request on your other accounts; true by default. Off only stops that retry within the same request; see [Routing](#routing). |
+| `retry_before_output` | Retry a request that fails before any output reaches the client a few times, after short fixed waits; true by default. See [Retries before output](#retries-before-output). |
 | `blocked_models` | Exact model IDs, without a credential prefix, that the proxy neither lists nor serves; `gpt-6-sol` and `gpt-5.6-sol` by default, plus Devin's `devin/gpt-6-sol` and `devin/gpt-5-6-sol`. An empty list blocks nothing. See [Blocked models](#blocked-models) for the limits. |
 | `diagnostics_keys` | Optional keys for the read-only [diagnostics](#diagnostics) endpoint on port 18318; empty (off) by default. Each needs at least 24 characters without leading or trailing spaces and must differ from `api_keys` and `management_password`, also when those have surrounding spaces. |
 
@@ -86,14 +87,16 @@ The app writes the options into the proxy's persistent config, `/data/cliproxy.y
 | `session_affinity` | `true` | `session-affinity` |
 | `session_affinity_ttl` | `1h` | `session-affinity-ttl` |
 | `retry_other_accounts` | `true` | `retry.request-retry` (3, or 0 when off), `retry.max-retry-credentials` (0 = try every account, or 1 when off) |
+| `retry_before_output` | `true` | `retry.max-retry-interval` (30, or 0 when off), `cooldown.transient-error-cooldown-seconds` (5, or 0 when off). Both are 0 when `retry_other_accounts` is off. |
 
 - `routing_strategy`: `round-robin` rotates over the accounts, and `fill-first` uses the first account until it is unavailable.
 - `session_affinity_ttl`: a binding expires after this much idle time; each request in the conversation renews it. Use hours, minutes and seconds in that order, such as `1h`, `45m` or `1h30m`.
 - `retry_other_accounts`: when on, a request that fails on one account is retried on your other accounts within that same request. When off, a failed request returns the error without trying another account. Turning it off only stops retrying another account within the same request: CLIProxyAPI 8.0.10 still moves a conversation to another account after a credential failure such as a 429, so the conversation's next request can go to a different account. Retry overrides set on an individual provider or credential still take precedence.
+- `retry_before_output`: lets a failed request wait briefly and try again, also on your only account. See [Retries before output](#retries-before-output).
 - If session affinity is on and the bound account runs out of quota or fails, CLIProxyAPI moves the conversation to another account automatically.
 - Bindings are kept in memory only and are lost on restart.
 
-Other routing fields, such as `session-affinity-subagents` (subagents with a parent session stay on the parent's account; true by default), `retry.max-retry-interval` and the `cooldown` settings, are not app options. The app leaves them as they are in `/data/cliproxy.yaml`, so they survive restarts and app updates; set them in the management panel or with the management API.
+Other routing fields, such as `session-affinity-subagents` (subagents with a parent session stay on the parent's account; true by default) and the other `cooldown` settings, such as `disable-cooling`, are not app options. The app leaves them as they are in `/data/cliproxy.yaml`, so they survive restarts and app updates; set them in the management panel or with the management API.
 
 **Precedence:** the app options are applied at every start. A change to a field in the table above made in the management panel or management API applies live, but lasts only until the next restart, when the app options overwrite it. To make a lasting change, change the app option.
 
@@ -106,6 +109,29 @@ curl -X PATCH -H 'Authorization: Bearer <management-key>' -H 'Content-Type: appl
 ```
 
 PATCH keeps routing fields you leave out; PUT replaces the whole routing section. The change applies live without a restart, and every routing change resets the in-memory affinity bindings. Read the routing settings back with `GET /v8/management/config/routing` only. Do not use a whole-config read (`/v8/management/config` or `/v8/management/config.yaml`) for this: it is not secret-redacted and includes client API keys and the management password.
+
+## Retries before output
+
+A provider sometimes fails a request before it has produced anything, for example when it is overloaded, briefly unavailable or rate limited. With `retry_before_output` on (the default), CLIProxyAPI waits a short, fixed time and sends the request again, a few times, before it returns the error. The app only sets CLIProxyAPI's own retry settings; it adds no retry logic of its own.
+
+- **Only before output.** A request is retried only while nothing has reached the client. A streamed request is retried only until its first piece of output arrives. A failure after that is passed on to the client and the request is never sent again, so no text or tool call is repeated.
+- **Which failures.** HTTP 408, 429, 500, 502, 503 and 504, and a connection that drops or is refused before the provider answers. Other errors, such as 400, 401 and 404, never get a retry after a wait; as before, `retry_other_accounts` may still try another account at once. A request the client cancels is not retried.
+- **How often.** At most 3 retries after the first attempt. CLIProxyAPI counts them in rounds (`retry.request-retry`): each round tries each of your accounts that can serve the request once, so a single account gets at most 4 attempts in total. A `request-retry` set on an individual provider or credential still takes precedence.
+- **How long it waits.** The app sets fixed class cooldowns, not a growing-wait schedule. CLIProxyAPI's own 429 handling can still lengthen a cooldown:
+  - after a timeout (408) or a 5xx error: 5 seconds;
+  - after a 429: at least 10 seconds. If an account keeps answering 429, CLIProxyAPI lengthens that account's cooldown, so a later wait can be longer;
+  - if the provider sends a `Retry-After` time that CLIProxyAPI reads (for OpenAI-compatible providers, on a 429), that time instead, but still at least 10 seconds after a 429;
+  - after a dropped or refused connection: no wait. CLIProxyAPI retries at once because the account is not cooled down, also when `retry_before_output` is off.
+
+  CLIProxyAPI adds a small random delay of up to a quarter of the wait, at most 2 seconds. When another account can take the request at once, it is used without waiting.
+- **30-second cooldown-wait limit.** If the next attempt would need a longer cooldown wait, such as a `Retry-After` of 2 minutes, the error is returned at once instead. This is a per-retry limit, not a total request deadline; jitter and provider response time add to the elapsed time. With the app's default retry count, a single account repeatedly returning a 5xx error incurs about 15 seconds of cooldown waiting, plus jitter. Repeated 429 responses can lengthen later waits or end retries early when the required cooldown exceeds the limit.
+- **The client decides how long it waits.** If the client gives up or disconnects during a wait, the request ends and nothing more is sent to the provider.
+
+The 5-second wait is also how long CLIProxyAPI skips an account after a timeout or 5xx error for every other request, instead of its default 60 seconds, so a briefly failing account is used again sooner. With `disable-cooling` turned on in the management panel there is no cooldown, so the retries follow each other without waiting, still at most 3.
+
+With `retry_before_output` off, the app writes CLIProxyAPI's defaults: no waiting before a retry, and a 60-second cooldown after a timeout or 5xx error. A failed request still moves to another available account at once when `retry_other_accounts` is on, but with a single account a 5xx error or 429 is returned at once. With `retry_other_accounts` off, the app disables retries regardless of `retry_before_output`; the provider or credential overrides described under [Routing](#routing) still take precedence.
+
+Every build runs `scripts/retry_check.py` against a fake provider with synthetic credentials and no real accounts. It checks recovery after HTTP 408, 429, 500, 502, 503 and 504 or a dropped connection; the retry count for persistent 503 errors and dropped connections; immediate errors for 400 and 401; rejection of a 429 cooldown beyond the wait limit; retries before streamed output but not after it starts; client disconnection during a wait; failover to another account; and each of the two options off. Connection refusal, 404 errors and repeated-429 cooldown growth are not exercised by this check.
 
 ## Blocked models
 
@@ -165,5 +191,7 @@ Back up the app before updating; the manager database migrates forward on start.
 Upstream updates stay plain version and checksum bumps of the official CLIProxyAPI and CPA Manager Plus releases. The app never patches or rebuilds either upstream; diagnostics is a separate process that only reads CPA Manager Plus's existing request-history query, so the update workflow needs no changes for it.
 
 Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, using only synthetic credentials and no real provider accounts. It then checks that diagnostics accepts the real CPA Manager Plus answer and lists the failure with only the allowed fields, the fixed message and no secrets or provider error text; that it answers `interface_incompatible` when the query is missing; and that stopping diagnostics leaves the proxy running.
+
+The image build also runs the [retry check](#retries-before-output), and publishing depends on it passing. If an upstream release breaks the checked retry contract, its update pull request fails that check; restore compatibility and pass the check before merging it.
 
 If an upstream release changes that query or the fields and types it returns, only this check fails: the image build, smoke test and publishing do not depend on it. You can merge the update anyway, and diagnostics then answers `unavailable` while the proxy works normally, or adapt diagnostics in the same pull request first.
