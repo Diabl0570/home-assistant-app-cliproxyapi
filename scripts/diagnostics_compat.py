@@ -2,7 +2,7 @@
 
 A fake provider inside the container answers every request with an overload error carrying fake secrets,
 so a real failed request flows from the proxy through the manager's request history to diagnostics,
-without provider accounts or credentials.
+using only synthetic credentials and no real provider accounts.
 """
 import json
 from pathlib import Path

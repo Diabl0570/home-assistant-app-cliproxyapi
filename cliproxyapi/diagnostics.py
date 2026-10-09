@@ -241,8 +241,8 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        # Answers already turn their own errors into a 500, so what reaches here is a client that hung up or
-        # timed out. The default report would print its address and a traceback into the app log.
+        # Suppress request-thread errors, including disconnects and timeouts: the default report would
+        # print the client address and a traceback into the app log.
         pass
 
 

@@ -30,7 +30,7 @@ The stock CLIProxyAPI panel is unchanged and still available at `http://HOME_ASS
 
 ## Diagnostics
 
-An optional, read-only endpoint lists recent failed requests, so you can match a client's model-connection error or a provider overload to what the proxy saw. It is off until you set at least one `diagnostics_keys` value; give each tool its own random key, for example from `openssl rand -hex 32`, then restart the app.
+An optional, read-only endpoint lists recent failed or interrupted requests, so you can match a client's model-connection error or a provider overload to what the proxy saw. It is off until you set at least one `diagnostics_keys` value; give each tool its own random key, for example from `openssl rand -hex 32`, then restart the app.
 
 ```sh
 curl -H 'Authorization: Bearer <diagnostics-key>' 'http://HOME_ASSISTANT_IP:18318/diagnostics/failures?hours=24&limit=50'
@@ -45,7 +45,7 @@ curl -H 'Authorization: Bearer <diagnostics-key>' 'http://HOME_ASSISTANT_IP:1831
 | `provider` | The provider of the account that served it, such as `codex`. |
 | `account` | The account's configured label, or `acct-` and a short stable hash when the label is missing, looks like an email or key, or is the label CLIProxyAPI gives every API key of a provider, such as `codex-apikey`. |
 | `status` | The upstream HTTP status. |
-| `error` | The class of `status`: `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (no status). |
+| `error` | The class of `status`: `rate_limited`, `overloaded`, `unavailable`, `timeout`, `unauthorized`, `forbidden`, `bad_request`, `not_found`, `server_error`, `client_error` or `interrupted` (`status` is `null`, 0 or 499). |
 | `message` | A fixed description of `error`, such as `Provider overloaded`. It is never the provider's own error message, which can quote the prompt. |
 | `streamed` | Whether the client asked for a streamed response. |
 | `output_tokens` | Output tokens counted before the failure. |
@@ -164,6 +164,6 @@ Back up the app before updating; the manager database migrates forward on start.
 
 Upstream updates stay plain version and checksum bumps of the official CLIProxyAPI and CPA Manager Plus releases. The app never patches or rebuilds either upstream; diagnostics is a separate process that only reads CPA Manager Plus's existing request-history query, so the update workflow needs no changes for it.
 
-Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, without accounts or credentials. It then checks that diagnostics accepts the real CPA Manager Plus answer and lists the failure with only the allowed fields, the fixed message and no secrets or provider error text; that it answers `interface_incompatible` when the query is missing; and that stopping diagnostics leaves the proxy running.
+Every build, including the build the update workflow starts for its pull request, runs a separate **diagnostics-compatibility** check. It builds the image with the pinned releases and sends a request through the real proxy to a fake provider inside the container, using only synthetic credentials and no real provider accounts. It then checks that diagnostics accepts the real CPA Manager Plus answer and lists the failure with only the allowed fields, the fixed message and no secrets or provider error text; that it answers `interface_incompatible` when the query is missing; and that stopping diagnostics leaves the proxy running.
 
 If an upstream release changes that query or the fields and types it returns, only this check fails: the image build, smoke test and publishing do not depend on it. You can merge the update anyway, and diagnostics then answers `unavailable` while the proxy works normally, or adapt diagnostics in the same pull request first.
