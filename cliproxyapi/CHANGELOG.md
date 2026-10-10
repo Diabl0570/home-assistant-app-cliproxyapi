@@ -1,3 +1,7 @@
+# 8.0.10-4
+
+- Update CPA Manager Plus to 1.14.5; upstream checksum pinned.
+
 # 8.0.10-3
 
 - Add the `retry_before_output` app option using CLIProxyAPI's native retry settings. See [Retries before output](DOCS.md#retries-before-output) for defaults, fixed class waits, limits and off-switch behaviour.
