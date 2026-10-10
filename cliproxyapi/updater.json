@@ -1,6 +1,6 @@
 {
   "repository": "router-for-me/CLIProxyAPI",
-  "version": "8.0.10",
-  "asset": "CLIProxyAPI_8.0.10_linux_amd64.tar.gz",
-  "sha256": "6211e059951e83acffedac098ad44a8bc60b47a53988c8d34d44397bfabbf578"
+  "version": "8.0.23",
+  "asset": "CLIProxyAPI_8.0.23_linux_amd64.tar.gz",
+  "sha256": "744000a1a4f9ce19f5964774f853d029797b87ef53796d054389258c66cb1224"
 }
